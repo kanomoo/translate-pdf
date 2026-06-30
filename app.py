@@ -96,6 +96,8 @@ BULLETS = {
     "\uf0fc": "✓",
     "\uf061": "▪",
     "\uf062": "•",
+    "²": "•",
+    "§": "▪",
 }
 
 
@@ -180,7 +182,7 @@ def block_text_info(block):
 def extract_items(doc):
     items = []
     for page_number, page in enumerate(doc):
-        page_dict = page.get_text("dict", flags=11)
+        page_dict = page.get_text("dict")
         for block in page_dict.get("blocks", []):
             if block.get("type") != 0:
                 continue
