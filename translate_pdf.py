@@ -252,36 +252,36 @@ def insert_thai_text(doc, items, cache):
         # Minimal padding to avoid crossing table boundaries or adjacent blocks
         rect.x0 = max(page.rect.x0, rect.x0 - 0.5)
         rect.y0 = max(page.rect.y0, rect.y0 - 0.5)
-        rect.x1 = min(page.rect.x1, rect.x1 + 0.5)
+        rect.x1 = min(page.rect.x1, rect.x1 + 1.0)
         rect.y1 = min(page.rect.y1, rect.y1 + 1.0)
         
         fontfile = FONT_BOLD if item["bold"] and Path(FONT_BOLD).exists() else FONT_REG
         fontname = "ThaiFontB" if item["bold"] else "ThaiFont"
         
         raw_translated = cache[item["text"]].replace("▪", "•").replace("□", "•")
-        # Tokenize Thai words and join with space to allow PyMuPDF to wrap text in tight table cells
+        # Remove spaces between Thai characters to prevent huge gaps when rendered
+        raw_translated = re.sub(r"(?<=[\u0E00-\u0E7F])\s+(?=[\u0E00-\u0E7F])", "", raw_translated)
+        
+        # Tokenize Thai words and join with zero-width space to allow PyMuPDF to wrap text gracefully without visible gaps
         words = pythainlp.word_tokenize(raw_translated, engine="newmm")
-        translated = " ".join(words)
-
-        # Remove multiple spaces
-        translated = re.sub(r" +", " ", translated).strip()
+        translated = "\u200b".join(words)
 
         min_size = max(4.0, original_size * 0.40)
-        lineheight = 1.15
+        lineheight = 1.05
         
-        rc = -1
         while size >= min_size:
-            rc = page.insert_textbox(
-                rect,
-                translated,
-                fontsize=size,
-                fontname=fontname,
-                fontfile=fontfile,
-                color=rgb_from_int(item["color"]),
-                align=fitz.TEXT_ALIGN_LEFT,
-                lineheight=lineheight,
+            # We use insert_htmlbox here to match app.py's implementation which supports ZWSP better
+            color_hex = f"#{item['color']:06x}"
+            font_weight = "bold" if item["bold"] else "normal"
+            html_text = translated.replace('\n', '<br>')
+            html = f"""<div style="font-family: sans-serif; font-size: {size}pt; font-weight: {font_weight}; color: {color_hex}; line-height: {lineheight}; text-align: left; margin: 0;">{html_text}</div>"""
+            
+            spare_height, scale = page.insert_htmlbox(
+                rect, html,
+                scale_low=min_size/size
             )
-            if rc >= 0:
+            if scale >= 1.0 and spare_height >= 0:
+                rc = 0
                 break
             size -= 0.5
 
@@ -290,15 +290,10 @@ def insert_thai_text(doc, items, cache):
         if rc < 0:
             clipped += 1
             # Force insert at min size if it still doesn't fit
-            page.insert_textbox(
-                rect,
-                translated,
-                fontsize=min_size,
-                fontname=fontname,
-                fontfile=fontfile,
-                color=rgb_from_int(item["color"]),
-                align=fitz.TEXT_ALIGN_LEFT,
-                lineheight=lineheight,
+            html = f"""<div style="font-family: sans-serif; font-size: {min_size}pt; font-weight: {font_weight}; color: {color_hex}; line-height: {lineheight}; text-align: left; margin: 0;">{html_text}</div>"""
+            page.insert_htmlbox(
+                rect, html,
+                scale_low=1.0
             )
         if index % 150 == 0:
             print(f"inserted={index}/{len(items)}", flush=True)

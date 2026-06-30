@@ -21,6 +21,7 @@ from pathlib import Path
 
 # pyrefly: ignore [missing-import]
 import fitz
+# pyrefly: ignore [missing-import]
 import pythainlp
 # pyrefly: ignore [missing-import]
 from flask import (
@@ -187,29 +188,13 @@ def extract_items(doc):
         for block in page_dict.get("blocks", []):
             if block.get("type") != 0:
                 continue
-            for line in block.get("lines", []):
-                parts, sizes, colors, fonts, flags_list = [], [], [], [], []
-                for span in line.get("spans", []):
-                    value = span.get("text", "")
-                    if value:
-                        parts.append(value)
-                        sizes.append(span.get("size", 12))
-                        colors.append(span.get("color", 0))
-                        fonts.append(span.get("font", ""))
-                        flags_list.append(span.get("flags", 0))
-                
-                joined = "".join(parts).strip()
-                if not joined:
-                    continue
-                    
-                size = sizes[0] if sizes else 12
-                color = colors[0] if colors else 0
-                bold = any("Bold" in f for f in fonts)
-                
+            
+            text, size, color, bold = block_text_info(block)
+            if text:
                 items.append({
                     "page": page_number,
-                    "bbox": list(line["bbox"]),
-                    "text": joined,
+                    "bbox": list(block["bbox"]),
+                    "text": text,
                     "size": size,
                     "color": color,
                     "bold": bold,
@@ -430,24 +415,24 @@ def run_translation(job_id, src_path):
             
             rect.x0 = max(page.rect.x0, rect.x0 - 0.5)
             rect.y0 = max(page.rect.y0, rect.y0 - 0.5)
-            rect.x1 = min(page.rect.x1, rect.x1 + 0.5)
+            rect.x1 = min(page.rect.x1, rect.x1 + 1.0)
             rect.y1 = min(page.rect.y1, rect.y1 + 1.0)
 
             raw_translated = sanitize_text(cache.get(item["text"], item["text"]))
+            # Remove spaces between Thai characters to prevent huge gaps when rendered
+            raw_translated = re.sub(r"(?<=[\u0E00-\u0E7F])\s+(?=[\u0E00-\u0E7F])", "", raw_translated)
             
-            # Tokenize Thai words and join with space to allow PyMuPDF to wrap text in tight table cells
+            # Tokenize Thai words and join with zero-width space to allow PyMuPDF to wrap text gracefully without visible gaps
             words = pythainlp.word_tokenize(raw_translated, engine="newmm")
-            translated = " ".join(words)
-            # Remove multiple spaces
-            translated = re.sub(r" +", " ", translated).strip()
+            translated = "\u200b".join(words)
 
             min_scale = 0.40
-            lineheight = 1.15
+            lineheight = 1.05
 
             color_hex = f"#{item['color']:06x}"
             font_weight = "bold" if item["bold"] else "normal"
             html_text = translated.replace('\n', '<br>')
-            html = f"""<div style="font-family: sans-serif; font-size: {size}pt; font-weight: {font_weight}; color: {color_hex}; line-height: {lineheight}; margin: 0;">{html_text}</div>"""
+            html = f"""<div style="font-family: sans-serif; font-size: {size}pt; font-weight: {font_weight}; color: {color_hex}; line-height: {lineheight}; text-align: left; margin: 0;">{html_text}</div>"""
             
             spare_height, scale = page.insert_htmlbox(
                 rect, html,
