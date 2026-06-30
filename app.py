@@ -1,0 +1,617 @@
+"""
+PDF Translator Web App — Translate any PDF to Thai with a beautiful web interface.
+
+Usage:
+    .venv/bin/python app.py
+
+Then open http://localhost:5000 in your browser.
+"""
+
+import concurrent.futures
+import json
+import os
+import re
+import statistics
+import threading
+import time
+import urllib.parse
+import urllib.request
+import uuid
+from pathlib import Path
+
+import fitz
+from flask import (
+    Flask,
+    Response,
+    jsonify,
+    render_template,
+    request,
+    send_file,
+)
+
+# ---------------------------------------------------------------------------
+# App setup
+# ---------------------------------------------------------------------------
+app = Flask(__name__)
+
+BASE_DIR = Path(__file__).resolve().parent
+UPLOAD_DIR = BASE_DIR / "uploads"
+OUTPUT_DIR = BASE_DIR / "output"
+CACHE_DIR = BASE_DIR / "cache"
+
+for d in (UPLOAD_DIR, OUTPUT_DIR, CACHE_DIR):
+    d.mkdir(parents=True, exist_ok=True)
+
+app.config["MAX_CONTENT_LENGTH"] = 100 * 1024 * 1024  # 100 MB max upload
+
+# ---------------------------------------------------------------------------
+# Font discovery (cross-platform)
+# ---------------------------------------------------------------------------
+
+def _find_font(candidates):
+    """Return the first font path that exists."""
+    for path in candidates:
+        if Path(path).exists():
+            return str(path)
+    return None
+
+
+FONT_REG = _find_font([
+    # Linux — Noto Sans Thai
+    "/usr/share/fonts/noto/NotoSansThai-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansThai-Regular.ttf",
+    "/usr/share/fonts/google-noto/NotoSansThai-Regular.ttf",
+    # Linux — Noto Sans Thai Looped
+    "/usr/share/fonts/noto/NotoSansThaiLooped-Regular.ttf",
+    # Linux — Droid Sans Thai
+    "/usr/share/fonts/droid/DroidSansThai.ttf",
+    # Windows
+    "C:/Windows/Fonts/LeelawUI.ttf",
+    # macOS
+    "/Library/Fonts/Thonburi.ttf",
+])
+
+FONT_BOLD = _find_font([
+    "/usr/share/fonts/noto/NotoSansThai-Bold.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansThai-Bold.ttf",
+    "/usr/share/fonts/google-noto/NotoSansThai-Bold.ttf",
+    "/usr/share/fonts/noto/NotoSansThaiLooped-Bold.ttf",
+    "C:/Windows/Fonts/LeelaUIb.ttf",
+    "/Library/Fonts/Thonburi Bold.ttf",
+])
+
+if not FONT_REG:
+    print("⚠️  WARNING: No Thai font found. Install noto-fonts-extra or similar.")
+
+# ---------------------------------------------------------------------------
+# Bullet substitutions & helpers
+# ---------------------------------------------------------------------------
+
+BULLETS = {
+    "\uf0a7": "▪",
+    "\uf0b7": "•",
+    "\uf0d8": "◦",
+    "\uf0fc": "✓",
+    "\uf061": "▪",
+    "\uf062": "•",
+}
+
+
+def clean_text(text):
+    for src, dst in BULLETS.items():
+        text = text.replace(src, dst)
+    text = text.replace("\u00a0", " ")
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    return text.strip()
+
+
+# ---------------------------------------------------------------------------
+# Language detection & text sanitization
+# ---------------------------------------------------------------------------
+
+def is_thai_char(ch):
+    """Check if a character is in the Thai Unicode block (U+0E00–U+0E7F)."""
+    return '\u0E00' <= ch <= '\u0E7F'
+
+
+def is_mostly_thai(text, threshold=0.4):
+    """Return True if >= threshold of alphabetic characters are Thai.
+
+    A threshold of 0.4 catches blocks like
+    'Computer Network and Internet | เครือข่ายคอมพิวเตอร์'
+    which are already bilingual and should NOT be re-translated.
+    """
+    alpha_chars = [ch for ch in text if ch.isalpha()]
+    if not alpha_chars:
+        return False
+    thai_count = sum(1 for ch in alpha_chars if is_thai_char(ch))
+    return thai_count / len(alpha_chars) >= threshold
+
+
+def sanitize_text(text):
+    """Remove/replace characters that NotoSansThai cannot render.
+
+    This prevents null-byte (\x00) artefacts in the output PDF.
+    """
+    # Remove null bytes and most control characters (keep \n, \t)
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    # Remove zero-width / invisible Unicode characters
+    text = text.replace('\u200b', '')   # zero-width space
+    text = text.replace('\u200c', '')   # zero-width non-joiner
+    text = text.replace('\u200d', '')   # zero-width joiner
+    text = text.replace('\ufeff', '')   # BOM
+    # Replace common PUA / symbol chars that break rendering
+    for src, dst in BULLETS.items():
+        text = text.replace(src, dst)
+    text = text.replace('□', '•').replace('▪', '•')
+    return text
+
+
+# ---------------------------------------------------------------------------
+# PDF text extraction
+# ---------------------------------------------------------------------------
+
+def block_text_info(block):
+    lines, sizes, colors, fonts, flags_list = [], [], [], [], []
+    for line in block.get("lines", []):
+        parts = []
+        for span in line.get("spans", []):
+            value = span.get("text", "")
+            if value:
+                parts.append(value)
+                sizes.append(span.get("size", 12))
+                colors.append(span.get("color", 0))
+                fonts.append(span.get("font", ""))
+                flags_list.append(span.get("flags", 0))
+        joined = "".join(parts).strip()
+        if joined:
+            lines.append(joined)
+
+    text = clean_text("\n".join(lines))
+    size = float(statistics.median(sizes)) if sizes else 12.0
+    color = colors[0] if colors else 0
+    bold = any("bold" in f.lower() for f in fonts) or any(fl & 16 for fl in flags_list)
+    return text, size, color, bold
+
+
+def extract_items(doc):
+    items = []
+    for page_number, page in enumerate(doc):
+        page_dict = page.get_text("dict", flags=11)
+        for block in page_dict.get("blocks", []):
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                parts, sizes, colors, fonts, flags_list = [], [], [], [], []
+                for span in line.get("spans", []):
+                    value = span.get("text", "")
+                    if value:
+                        parts.append(value)
+                        sizes.append(span.get("size", 12))
+                        colors.append(span.get("color", 0))
+                        fonts.append(span.get("font", ""))
+                        flags_list.append(span.get("flags", 0))
+                
+                joined = "".join(parts).strip()
+                if not joined:
+                    continue
+                    
+                size = sizes[0] if sizes else 12
+                color = colors[0] if colors else 0
+                bold = any("Bold" in f for f in fonts)
+                
+                items.append({
+                    "page": page_number,
+                    "bbox": list(line["bbox"]),
+                    "text": joined,
+                    "size": size,
+                    "color": color,
+                    "bold": bold,
+                })
+    return items
+
+
+# ---------------------------------------------------------------------------
+# Translation engine (Google Translate, free tier)
+# ---------------------------------------------------------------------------
+
+def translate_payload(payload):
+    url = (
+        "https://translate.googleapis.com/translate_a/single"
+        "?client=gtx&sl=auto&tl=th&dt=t&q="
+        + urllib.parse.quote(payload)
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=45) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    return clean_text("".join(part[0] for part in data[0] if part and part[0]))
+
+
+def translate_batch(batch):
+    marker_prefix = "ZXQ"
+    payload_parts, markers = [], []
+    for index, text in batch:
+        marker = f"@@{marker_prefix}{index:04d}@@"
+        markers.append((marker, index, text))
+        payload_parts.append(marker)
+        payload_parts.append(text)
+    payload_parts.append(f"@@{marker_prefix}END@@")
+    translated = translate_payload("\n".join(payload_parts))
+
+    result = {}
+    for pos, (marker, index, original) in enumerate(markers):
+        next_marker = markers[pos + 1][0] if pos + 1 < len(markers) else f"@@{marker_prefix}END@@"
+        pattern = re.escape(marker) + r"\s*(.*?)\s*" + re.escape(next_marker)
+        match = re.search(pattern, translated, flags=re.S)
+        if not match:
+            raise RuntimeError(f"Cannot parse translated batch near {marker}")
+        value = clean_text(match.group(1))
+        result[original] = value
+    return result
+
+
+# ---------------------------------------------------------------------------
+# PDF rendering helpers
+# ---------------------------------------------------------------------------
+
+def rgb_from_int(color):
+    return ((color >> 16 & 255) / 255, (color >> 8 & 255) / 255, (color & 255) / 255)
+
+
+def sample_background(page, rect, pix):
+    width, height = pix.width, pix.height
+    x0, y0, x1, y1 = [int(round(v)) for v in rect]
+    pad, step, samples = 5, 6, []
+    for x in range(max(0, x0 - pad), min(width, x1 + pad), step):
+        for y in (max(0, y0 - pad), min(height - 1, y1 + pad)):
+            samples.append(pix.pixel(x, y)[:3])
+    for y in range(max(0, y0 - pad), min(height, y1 + pad), step):
+        for x in (max(0, x0 - pad), min(width - 1, x1 + pad)):
+            samples.append(pix.pixel(x, y)[:3])
+    if not samples:
+        return (1, 1, 1)
+    return tuple(statistics.median(ch) / 255 for ch in zip(*samples))
+
+
+def expanded_rect(rect, page_rect, amount=1.4):
+    output = fitz.Rect(rect)
+    output.x0 = max(page_rect.x0, output.x0 - amount)
+    output.y0 = max(page_rect.y0, output.y0 - amount)
+    output.x1 = min(page_rect.x1, output.x1 + amount)
+    output.y1 = min(page_rect.y1, output.y1 + amount)
+    return output
+
+
+# ---------------------------------------------------------------------------
+# Job state
+# ---------------------------------------------------------------------------
+jobs = {}  # job_id -> { status, progress, events, ... }
+jobs_lock = threading.Lock()
+
+
+def emit(job_id, event_type, data):
+    """Push an SSE event into the job's event queue."""
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if job:
+            job["events"].append({"event": event_type, "data": data})
+
+
+# ---------------------------------------------------------------------------
+# Translation pipeline (runs in background thread)
+# ---------------------------------------------------------------------------
+
+def run_translation(job_id, src_path):
+    """Full translation pipeline with progress events."""
+    try:
+        emit(job_id, "stage", {"stage": "extracting", "message": "กำลังอ่านไฟล์ PDF..."})
+
+        doc = fitz.open(str(src_path))
+        total_pages = len(doc)
+        emit(job_id, "info", {"pages": total_pages, "filename": src_path.name})
+
+        # Extract text blocks
+        items = extract_items(doc)
+        emit(job_id, "stage", {"stage": "translating", "message": f"พบ {len(items)} ข้อความ กำลังแปล..."})
+
+        # Load/build cache
+        cache_path = CACHE_DIR / f"{job_id}_cache.json"
+        cache = {}
+
+        # Find unique texts to translate — skip already-Thai text
+        unique, seen = [], set()
+        thai_skipped = 0
+        for item in items:
+            text = item["text"]
+            if is_mostly_thai(text):
+                cache[text] = text  # Keep original Thai unchanged
+                thai_skipped += 1
+            elif text not in cache and text not in seen:
+                seen.add(text)
+                unique.append(text)
+
+        if thai_skipped:
+            emit(job_id, "info", {"thai_skipped": thai_skipped})
+
+        # Build batches
+        batches, current, current_chars = [], [], 0
+        for idx, text in enumerate(unique):
+            text_len = len(text)
+            if current and (len(current) >= 24 or current_chars + text_len > 3500):
+                batches.append(current)
+                current, current_chars = [], 0
+            current.append((idx, text))
+            current_chars += text_len
+        if current:
+            batches.append(current)
+
+        total_batches = len(batches)
+        emit(job_id, "progress", {
+            "step": "translate",
+            "current": 0,
+            "total": total_batches,
+            "percent": 0,
+        })
+
+        # Translate in parallel
+        if batches:
+            completed = 0
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                future_to_batch = {
+                    executor.submit(translate_batch, batch): batch
+                    for batch in batches
+                }
+                for future in concurrent.futures.as_completed(future_to_batch):
+                    batch = future_to_batch[future]
+                    try:
+                        cache.update(future.result())
+                    except Exception:
+                        for entry in batch:
+                            try:
+                                cache.update(translate_batch([entry]))
+                            except Exception as e:
+                                # Skip untranslatable items
+                                _, _, orig_text = entry if len(entry) == 3 else (None, None, entry[1])
+                                cache[orig_text] = orig_text
+                    completed += 1
+                    pct = int(completed / total_batches * 100)
+                    emit(job_id, "progress", {
+                        "step": "translate",
+                        "current": completed,
+                        "total": total_batches,
+                        "percent": pct,
+                    })
+                    time.sleep(0.05)
+
+            # Save cache
+            cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        # Build PDF
+        emit(job_id, "stage", {"stage": "building", "message": "กำลังสร้าง PDF ภาษาไทย..."})
+
+        # Remove original text
+        by_page = {}
+        for item in items:
+            by_page.setdefault(item["page"], []).append(item)
+
+        for page_number, page_items in by_page.items():
+            page = doc[page_number]
+            pix = page.get_pixmap(matrix=fitz.Matrix(1, 1), alpha=False)
+            for item in page_items:
+                rect = fitz.Rect(item["bbox"])
+                rect.x0 -= 1.0
+                rect.y0 -= 1.0
+                rect.x1 += 1.0
+                rect.y1 += 1.0
+                page.add_redact_annot(rect, fill=None)
+            page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+
+            pct = int((page_number + 1) / total_pages * 40)
+            emit(job_id, "progress", {
+                "step": "build_redact",
+                "current": page_number + 1,
+                "total": total_pages,
+                "percent": pct,
+            })
+
+        # Insert Thai text
+        shrunk, clipped = 0, 0
+        for index, item in enumerate(items, 1):
+            page = doc[item["page"]]
+            rect = fitz.Rect(item["bbox"])
+            rect.x0 = max(page.rect.x0, rect.x0 - 0.8)
+            rect.y0 = max(page.rect.y0, rect.y0 - 0.8)
+            rect.x1 = min(page.rect.x1, rect.x1 + 3.5)
+            rect.y1 = min(page.rect.y1, rect.y1 + 2.0)
+
+            fontfile = FONT_BOLD if item["bold"] and FONT_BOLD else FONT_REG
+            fontname = "ThaiFontB" if item["bold"] else "ThaiFont"
+            translated = sanitize_text(cache.get(item["text"], item["text"]))
+
+            size = item["size"]
+            if item["size"] <= 10:
+                min_scale = 0.30
+                lineheight = 0.94
+            else:
+                min_scale = 0.45
+                lineheight = 1.02
+
+            color_hex = f"#{item['color']:06x}"
+            font_weight = "bold" if item["bold"] else "normal"
+            html_text = translated.replace('\n', '<br>')
+            html = f"""<div style="font-family: sans-serif; font-size: {size}pt; font-weight: {font_weight}; color: {color_hex}; line-height: {lineheight}; margin: 0;">{html_text}</div>"""
+            
+            spare_height, scale = page.insert_htmlbox(
+                rect, html,
+                scale_low=min_scale
+            )
+
+            if scale < 1.0:
+                shrunk += 1
+            if spare_height < 0:
+                clipped += 1
+
+            if index % 50 == 0 or index == len(items):
+                pct = 40 + int(index / len(items) * 60)
+                emit(job_id, "progress", {
+                    "step": "build_insert",
+                    "current": index,
+                    "total": len(items),
+                    "percent": pct,
+                })
+
+        # Save output
+        out_path = OUTPUT_DIR / f"{job_id}.pdf"
+        doc.save(str(out_path), garbage=4, deflate=True)
+        doc.close()
+
+        with jobs_lock:
+            jobs[job_id]["status"] = "complete"
+            jobs[job_id]["output"] = str(out_path)
+            jobs[job_id]["total_pages"] = total_pages
+
+        emit(job_id, "complete", {
+            "message": "แปลเสร็จสมบูรณ์! 🎉",
+            "filename": src_path.stem + "_TH.pdf",
+            "pages": total_pages,
+            "shrunk": shrunk,
+            "clipped": clipped,
+        })
+
+    except Exception as e:
+        with jobs_lock:
+            jobs[job_id]["status"] = "error"
+        emit(job_id, "error", {"message": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Flask routes
+# ---------------------------------------------------------------------------
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/upload", methods=["POST"])
+def upload():
+    if "file" not in request.files:
+        return jsonify({"error": "ไม่พบไฟล์"}), 400
+
+    file = request.files["file"]
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        return jsonify({"error": "กรุณาอัปโหลดไฟล์ PDF เท่านั้น"}), 400
+
+    job_id = uuid.uuid4().hex[:12]
+    safe_name = re.sub(r'[^\w\-.]', '_', file.filename)
+    src_path = UPLOAD_DIR / f"{job_id}_{safe_name}"
+    file.save(str(src_path))
+
+    # Get page count
+    try:
+        doc = fitz.open(str(src_path))
+        page_count = len(doc)
+        doc.close()
+    except Exception as e:
+        return jsonify({"error": f"ไม่สามารถเปิดไฟล์ PDF: {e}"}), 400
+
+    with jobs_lock:
+        jobs[job_id] = {
+            "status": "processing",
+            "progress": 0,
+            "events": [],
+            "source": str(src_path),
+            "filename": file.filename,
+            "pages": page_count,
+        }
+
+    # Start background translation
+    thread = threading.Thread(target=run_translation, args=(job_id, src_path), daemon=True)
+    thread.start()
+
+    return jsonify({
+        "job_id": job_id,
+        "filename": file.filename,
+        "pages": page_count,
+    })
+
+
+@app.route("/progress/<job_id>")
+def progress(job_id):
+    """Server-Sent Events endpoint for real-time progress."""
+    def generate():
+        last_index = 0
+        while True:
+            with jobs_lock:
+                job = jobs.get(job_id)
+                if not job:
+                    yield f"event: error\ndata: {json.dumps({'message': 'Job not found'})}\n\n"
+                    return
+
+                events = job["events"][last_index:]
+                last_index = len(job["events"])
+                status = job["status"]
+
+            for ev in events:
+                yield f"event: {ev['event']}\ndata: {json.dumps(ev['data'], ensure_ascii=False)}\n\n"
+
+            if status in ("complete", "error"):
+                return
+
+            time.sleep(0.3)
+
+    return Response(generate(), mimetype="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    })
+
+
+@app.route("/download/<job_id>/<filename>")
+def download(job_id, filename):
+    with jobs_lock:
+        job = jobs.get(job_id)
+    if not job or job["status"] != "complete":
+        return jsonify({"error": "ไฟล์ยังไม่พร้อม"}), 404
+
+    out_path = Path(job["output"])
+    download_name = Path(job["filename"]).stem + "_TH.pdf"
+    return send_file(
+        str(out_path),
+        as_attachment=False,
+        download_name=download_name,
+        mimetype="application/pdf",
+    )
+
+
+@app.route("/preview/<job_id>/<int:page>")
+def preview(job_id, page):
+    """Render a page of the translated PDF as a PNG image."""
+    with jobs_lock:
+        job = jobs.get(job_id)
+    if not job or job["status"] != "complete":
+        return jsonify({"error": "ยังไม่เสร็จ"}), 404
+
+    out_path = Path(job["output"])
+    doc = fitz.open(str(out_path))
+    if page < 0 or page >= len(doc):
+        doc.close()
+        return jsonify({"error": "หน้าไม่ถูกต้อง"}), 404
+
+    pix = doc[page].get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+    img_bytes = pix.tobytes("png")
+    doc.close()
+
+    return Response(img_bytes, mimetype="image/png", headers={
+        "Cache-Control": "public, max-age=3600",
+    })
+
+
+# ---------------------------------------------------------------------------
+# Run
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    print(f"🌐 PDF Translator running at http://localhost:5000")
+    print(f"📁 Thai font (regular): {FONT_REG}")
+    print(f"📁 Thai font (bold):    {FONT_BOLD}")
+    app.run(host="0.0.0.0", port=5000, debug=True, threaded=True)

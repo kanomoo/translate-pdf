@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="แปลไฟล์ PDF จากภาษาอังกฤษเป็นภาษาไทยแบบอัตโนมัติ ด้วยคุณภาพสูง">
+    <title>PDF Translator — แปล PDF เป็นภาษาไทย</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Noto+Sans+Thai:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- Animated background orbs -->
+    <div class="bg-orbs">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+    </div>
+
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="logo">
+                <div class="logo-icon">
+                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                        <rect x="2" y="4" width="20" height="26" rx="3" stroke="url(#grad1)" stroke-width="2"/>
+                        <rect x="10" y="2" width="20" height="26" rx="3" fill="rgba(99,102,241,0.15)" stroke="url(#grad2)" stroke-width="2"/>
+                        <path d="M15 10h10M15 14h8M15 18h10M15 22h6" stroke="url(#grad2)" stroke-width="1.5" stroke-linecap="round"/>
+                        <defs>
+                            <linearGradient id="grad1" x1="2" y1="4" x2="22" y2="30">
+                                <stop stop-color="#818cf8"/><stop offset="1" stop-color="#6366f1"/>
+                            </linearGradient>
+                            <linearGradient id="grad2" x1="10" y1="2" x2="30" y2="28">
+                                <stop stop-color="#a78bfa"/><stop offset="1" stop-color="#6366f1"/>
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                </div>
+                <div class="logo-text">
+                    <h1>PDF Translator</h1>
+                    <span class="logo-subtitle">แปล PDF → ไทย</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+
+            <!-- Upload Section -->
+            <section id="upload-section" class="card upload-card">
+                <div id="drop-zone" class="drop-zone">
+                    <div class="drop-zone-content">
+                        <div class="upload-icon">
+                            <svg width="64" height="64" viewBox="0 0 64 64" fill="none">
+                                <circle cx="32" cy="32" r="28" stroke="url(#uploadGrad)" stroke-width="2" stroke-dasharray="6 4" opacity="0.5"/>
+                                <path d="M32 20v20M24 28l8-8 8 8" stroke="url(#uploadGrad)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                                <defs>
+                                    <linearGradient id="uploadGrad" x1="4" y1="4" x2="60" y2="60">
+                                        <stop stop-color="#818cf8"/><stop offset="1" stop-color="#c084fc"/>
+                                    </linearGradient>
+                                </defs>
+                            </svg>
+                        </div>
+                        <h2 class="drop-zone-title">ลากไฟล์ PDF มาวางที่นี่</h2>
+                        <p class="drop-zone-hint">หรือคลิกเพื่อเลือกไฟล์ • รองรับไฟล์ PDF ทุกประเภท สูงสุด 100 MB</p>
+                        <button id="browse-btn" class="btn btn-secondary" type="button">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="17 8 12 3 7 8"/>
+                                <line x1="12" y1="3" x2="12" y2="15"/>
+                            </svg>
+                            เลือกไฟล์
+                        </button>
+                    </div>
+                    <input type="file" id="file-input" accept=".pdf" hidden>
+                </div>
+            </section>
+
+            <!-- File Info Card (shown after upload) -->
+            <section id="file-info-section" class="card file-info-card hidden">
+                <div class="file-info-header">
+                    <div class="file-icon">
+                        <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
+                            <rect x="6" y="2" width="28" height="36" rx="4" fill="rgba(99,102,241,0.12)" stroke="#6366f1" stroke-width="1.5"/>
+                            <path d="M12 14h16M12 19h12M12 24h14M12 29h8" stroke="#818cf8" stroke-width="1.5" stroke-linecap="round"/>
+                            <text x="20" y="10" text-anchor="middle" fill="#a78bfa" font-size="6" font-weight="700">PDF</text>
+                        </svg>
+                    </div>
+                    <div class="file-details">
+                        <h3 id="file-name" class="file-name">document.pdf</h3>
+                        <div class="file-meta">
+                            <span id="file-size" class="file-meta-item">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/></svg>
+                                0 MB
+                            </span>
+                            <span id="file-pages" class="file-meta-item">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 3v18"/></svg>
+                                0 หน้า
+                            </span>
+                        </div>
+                    </div>
+                    <button id="remove-file-btn" class="btn-icon" title="ลบไฟล์">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                </div>
+                <button id="translate-btn" class="btn btn-primary btn-lg">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M5 8l6 6M4 14l6-6 2 3M2 5h12M7 2v3"/>
+                        <path d="M11 19l4-8 4 8M13 17h4"/>
+                    </svg>
+                    เริ่มแปลเป็นภาษาไทย
+                </button>
+            </section>
+
+            <!-- Progress Section -->
+            <section id="progress-section" class="card progress-card hidden">
+                <div class="progress-header">
+                    <div class="progress-spinner">
+                        <svg width="48" height="48" viewBox="0 0 48 48">
+                            <circle cx="24" cy="24" r="20" fill="none" stroke="rgba(99,102,241,0.15)" stroke-width="3"/>
+                            <circle cx="24" cy="24" r="20" fill="none" stroke="url(#spinGrad)" stroke-width="3" stroke-linecap="round" stroke-dasharray="80 46" class="spinner-circle"/>
+                            <defs>
+                                <linearGradient id="spinGrad" x1="0" y1="0" x2="48" y2="48">
+                                    <stop stop-color="#818cf8"/><stop offset="1" stop-color="#c084fc"/>
+                                </linearGradient>
+                            </defs>
+                        </svg>
+                    </div>
+                    <div class="progress-info">
+                        <h3 id="progress-stage" class="progress-stage">กำลังเตรียมพร้อม...</h3>
+                        <p id="progress-detail" class="progress-detail">รอสักครู่</p>
+                    </div>
+                </div>
+
+                <!-- Stage indicators -->
+                <div class="stage-indicators">
+                    <div class="stage-item" data-stage="extracting">
+                        <div class="stage-dot"></div>
+                        <span>อ่าน PDF</span>
+                    </div>
+                    <div class="stage-connector"></div>
+                    <div class="stage-item" data-stage="translating">
+                        <div class="stage-dot"></div>
+                        <span>แปลภาษา</span>
+                    </div>
+                    <div class="stage-connector"></div>
+                    <div class="stage-item" data-stage="building">
+                        <div class="stage-dot"></div>
+                        <span>สร้าง PDF</span>
+                    </div>
+                </div>
+
+                <!-- Progress bar -->
+                <div class="progress-bar-container">
+                    <div class="progress-bar">
+                        <div id="progress-fill" class="progress-fill" style="width: 0%"></div>
+                    </div>
+                    <span id="progress-percent" class="progress-percent">0%</span>
+                </div>
+            </section>
+
+            <!-- Complete Section -->
+            <section id="complete-section" class="card complete-card hidden">
+                <div class="complete-icon">
+                    <svg width="72" height="72" viewBox="0 0 72 72" fill="none">
+                        <circle cx="36" cy="36" r="32" fill="rgba(34,197,94,0.1)" stroke="#22c55e" stroke-width="2"/>
+                        <path d="M22 36l10 10 18-20" stroke="#22c55e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="checkmark-path"/>
+                    </svg>
+                </div>
+                <h2 class="complete-title">แปลเสร็จสมบูรณ์! 🎉</h2>
+                <p id="complete-detail" class="complete-detail">ไฟล์ PDF ของคุณได้รับการแปลเป็นภาษาไทยเรียบร้อยแล้ว</p>
+
+                <div class="complete-actions">
+                    <a id="download-btn" href="#" class="btn btn-primary btn-lg download-btn">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="7 10 12 15 17 10"/>
+                            <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                        ดาวน์โหลด PDF ภาษาไทย
+                    </a>
+                    <button id="new-file-btn" class="btn btn-secondary">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                        แปลไฟล์ใหม่
+                    </button>
+                </div>
+
+                <!-- Preview -->
+                <div id="preview-section" class="preview-section hidden">
+                    <h3 class="preview-title">ตัวอย่าง</h3>
+                    <div class="preview-controls">
+                        <button id="prev-page-btn" class="btn-icon" title="หน้าก่อนหน้า">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+                        </button>
+                        <span id="page-indicator" class="page-indicator">หน้า 1 / 1</span>
+                        <button id="next-page-btn" class="btn-icon" title="หน้าถัดไป">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
+                        </button>
+                    </div>
+                    <div class="preview-frame">
+                        <img id="preview-img" class="preview-img" alt="ตัวอย่างหน้า PDF" />
+                    </div>
+                </div>
+            </section>
+
+            <!-- Error Section -->
+            <section id="error-section" class="card error-card hidden">
+                <div class="error-icon">
+                    <svg width="56" height="56" viewBox="0 0 56 56" fill="none">
+                        <circle cx="28" cy="28" r="24" fill="rgba(239,68,68,0.1)" stroke="#ef4444" stroke-width="2"/>
+                        <path d="M28 18v12M28 34v2" stroke="#ef4444" stroke-width="3" stroke-linecap="round"/>
+                    </svg>
+                </div>
+                <h3 class="error-title">เกิดข้อผิดพลาด</h3>
+                <p id="error-message" class="error-message">ไม่สามารถแปลไฟล์ได้</p>
+                <button id="retry-btn" class="btn btn-secondary">ลองใหม่อีกครั้ง</button>
+            </section>
+
+        </main>
+
+        <!-- Footer -->
+        <footer class="app-footer">
+            <p>ใช้ Google Translate API • รองรับ PDF ทุกประเภท</p>
+        </footer>
+    </div>
+
+    <script src="/static/app.js?v=3"></script>
+</body>
+</html>
