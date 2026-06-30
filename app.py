@@ -19,7 +19,9 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+# pyrefly: ignore [missing-import]
 import fitz
+# pyrefly: ignore [missing-import]
 from flask import (
     Flask,
     Response,
