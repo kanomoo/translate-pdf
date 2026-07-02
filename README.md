@@ -27,49 +27,93 @@ A modern, web-based PDF translator that converts English PDFs to Thai with high-
 
 ## 🚀 Quick Start
 
-### 1. Clone the Repository
+### ⚡ One-Click Setup (แนะนำ / Recommended)
+
+เราเตรียม script สำหรับติดตั้งและรันโปรแกรมให้อัตโนมัติ:
+
+**Windows:**
+```
+setup.bat
+```
+ดับเบิลคลิกไฟล์ `setup.bat` หรือเปิด Terminal แล้วพิมพ์คำสั่งด้านบน — script จะสร้าง virtual environment, ติดตั้ง dependencies, และเปิดเซิร์ฟเวอร์ให้อัตโนมัติ
+
+**Linux / macOS:**
+```bash
+chmod +x setup.sh
+./setup.sh
+```
+Script จะติดตั้งทุกอย่างรวมถึง Thai fonts (บน Linux) ให้อัตโนมัติ
+
+เมื่อเซิร์ฟเวอร์เริ่มทำงาน เปิดเบราว์เซอร์ไปที่ **http://localhost:5000**
+
+---
+
+### 🔧 Manual Setup (ติดตั้งเอง)
+
+หากต้องการติดตั้งเอง ทำตามขั้นตอนด้านล่าง:
+
+#### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/kanomoo/translate-pdf.git
 cd translate-pdf
 ```
 
-### 2. Create Virtual Environment
+#### 2. Create Virtual Environment
 
-```bash
-# Create Python virtual environment
-python3 -m venv .venv
+<details>
+<summary><b>🪟 Windows</b></summary>
 
-# Activate virtual environment
-# On Linux/macOS:
-source .venv/bin/activate
-# On Windows:
-.venv\Scripts\activate
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
 ```
 
-### 3. Install Dependencies
+> เมื่อ activate สำเร็จ จะมีคำว่า `(.venv)` ขึ้นที่หน้าบรรทัดคำสั่ง
+
+</details>
+
+<details>
+<summary><b>🐧 Linux / 🍎 macOS</b></summary>
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+> ⚠️ **Linux:** หากพบ error ให้ติดตั้ง `python3-venv` ก่อน:
+> ```bash
+> sudo apt install python3-venv   # Debian/Ubuntu
+> sudo dnf install python3        # Fedora
+> ```
+
+</details>
+
+#### 3. Install Dependencies
+
+> ⚠️ **สำคัญ:** ต้องรันคำสั่งนี้ก่อนเปิดโปรแกรม มิฉะนั้นจะพบ error `ModuleNotFoundError: No module named 'pythainlp'`
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Install Thai Fonts (Linux only)
+#### 4. Install Thai Fonts
 
-```bash
-# Debian/Ubuntu
-sudo apt-get install fonts-noto-cjk fonts-noto-cjk-extra fonts-noto-cjk-color-emoji
+| OS | วิธีติดตั้ง | หมายเหตุ |
+|---|---|---|
+| **Windows** | ไม่ต้องทำอะไร | มี LeelawUI มาพร้อมกับระบบ |
+| **macOS** | ไม่ต้องทำอะไร | มี Thonburi มาพร้อมกับระบบ |
+| **Ubuntu/Debian** | `sudo apt-get install fonts-noto-cjk fonts-noto-cjk-extra` | จำเป็นต้องติดตั้ง |
+| **Fedora** | `sudo dnf install google-noto-sans-thai-fonts` | จำเป็นต้องติดตั้ง |
+| **Arch Linux** | `sudo pacman -S noto-fonts-extra` | จำเป็นต้องติดตั้ง |
 
-# Fedora
-sudo dnf install google-noto-sans-thai-fonts
-```
-
-### 5. Run the Application
+#### 5. Run the Application
 
 ```bash
 python app.py
 ```
 
-The app will start at `http://localhost:5000`
+เปิดเบราว์เซอร์ไปที่ **http://localhost:5000**
 
 ## 🎯 Usage
 
@@ -175,6 +219,23 @@ Edit `/templates/index.html` to change interface text and styling.
 - **Temporary Files** — Uploaded and translated files are stored in `uploads/` and `output/` directories
 
 ## 🐛 Troubleshooting
+
+### Issue: `ModuleNotFoundError: No module named 'pythainlp'`
+
+**สาเหตุ:** ยังไม่ได้ติดตั้ง Python dependencies ลงใน virtual environment
+
+**วิธีแก้:**
+```bash
+# ตรวจสอบว่า activate venv แล้ว (จะเห็น (.venv) ที่หน้าบรรทัดคำสั่ง)
+# Windows:
+.\.venv\Scripts\activate
+
+# Linux/macOS:
+source .venv/bin/activate
+
+# จากนั้นติดตั้ง dependencies:
+pip install -r requirements.txt
+```
 
 ### Issue: "No Thai font found" warning
 
