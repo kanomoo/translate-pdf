@@ -167,56 +167,113 @@ def extract_items(doc):
             if block.get("type") != 0:
                 continue
                 
-            # 1. Extract phrases by splitting lines on large horizontal gaps
-            phrases = []
+            # 1. Flatten all spans in the block
+            all_spans = []
             for line in block.get("lines", []):
-                current_spans = []
                 for span in line.get("spans", []):
                     text = span.get("text", "").strip()
-                    if not text:
-                        continue
+                    if text:
+                        all_spans.append(span)
+                        
+            if not all_spans:
+                continue
+
+            # 2. Group spans into physical rows based on y-coordinate overlap
+            rows = []
+            for span in all_spans:
+                py0, py1 = span["bbox"][1], span["bbox"][3]
+                placed = False
+                for row in rows:
+                    ry0, ry1 = row["core_bbox"][1], row["core_bbox"][3]
+                    overlap = max(0, min(py1, ry1) - max(py0, ry0))
+                    if overlap > (py1 - py0) * 0.5:
+                        row["spans"].append(span)
+                        row["bbox"] = [
+                            min(row["bbox"][0], span["bbox"][0]),
+                            min(row["bbox"][1], py0),
+                            max(row["bbox"][2], span["bbox"][2]),
+                            max(row["bbox"][3], py1)
+                        ]
+                        placed = True
+                        break
+                if not placed:
+                    rows.append({
+                        "spans": [span],
+                        "bbox": span["bbox"],
+                        "core_bbox": span["bbox"]
+                    })
+                    
+            # 3. Sort spans within each row from left to right, and group into phrases
+            is_table = False
+            row_phrases = []
+            import re
+            for row in rows:
+                sorted_spans = sorted(row["spans"], key=lambda s: s["bbox"][0])
+                phrases = []
+                current_spans = []
+                for span in sorted_spans:
                     if not current_spans:
                         current_spans.append(span)
                         continue
                     
                     last_span = current_spans[-1]
                     gap = span["bbox"][0] - last_span["bbox"][2]
-                    # If horizontal gap is larger than 1.5x font size, it's a separate phrase (e.g. column)
-                    if gap > (span.get("size", 12) * 1.5):
+                    
+                    if gap > (span.get("size", 12) * 1.0):
                         phrases.append(current_spans)
+                        prev_text = "".join(s["text"] for s in current_spans).strip()
+                        if not bool(re.match(r'^(\d+[\.\)]|[•\-\*>])$', prev_text)):
+                            is_table = True
                         current_spans = [span]
                     else:
                         current_spans.append(span)
                 if current_spans:
                     phrases.append(current_spans)
-                    
-            # 2. Merge phrases vertically into chunks if they horizontally overlap
+                row_phrases.append(phrases)
+
+            # 4. Create chunks based on is_table heuristic
             chunks = []
-            for phrase_spans in phrases:
-                px0 = min(s["bbox"][0] for s in phrase_spans)
-                py0 = min(s["bbox"][1] for s in phrase_spans)
-                px1 = max(s["bbox"][2] for s in phrase_spans)
-                py1 = max(s["bbox"][3] for s in phrase_spans)
+            if is_table:
+                # Keep each phrase as its own chunk
+                for phrases in row_phrases:
+                    for i, phrase_spans in enumerate(phrases):
+                        px0 = min(s["bbox"][0] for s in phrase_spans)
+                        py0 = min(s["bbox"][1] for s in phrase_spans)
+                        px1 = max(s["bbox"][2] for s in phrase_spans)
+                        py1 = max(s["bbox"][3] for s in phrase_spans)
+                        
+                        # Expand y0 and y1
+                        h = py1 - py0
+                        py0 = max(0, py0 - h * 0.3)
+                        py1 = min(page.rect.height, py1 + h * 0.3)
+                        
+                        # Expand x1
+                        if i < len(phrases) - 1:
+                            next_px0 = min(s["bbox"][0] for s in phrases[i+1])
+                            expanded_x1 = max(px1, next_px0 - 5)
+                        else:
+                            expanded_x1 = max(px1, page.rect.width - 20)
+                            
+                        chunks.append({
+                            "phrases": [phrase_spans],
+                            "bbox": [px0, py0, expanded_x1, py1]
+                        })
+            else:
+                # Merge all rows into a single paragraph chunk
+                all_phrases = [phrase for phrases in row_phrases for phrase in phrases]
+                px0 = min(s["bbox"][0] for p in all_phrases for s in p)
+                py0 = min(s["bbox"][1] for p in all_phrases for s in p)
+                px1 = max(s["bbox"][2] for p in all_phrases for s in p)
+                py1 = max(s["bbox"][3] for p in all_phrases for s in p)
                 
-                merged = False
-                for chunk in chunks:
-                    cx0, cy0, cx1, cy1 = chunk["bbox"]
-                    overlap_x = max(0, min(px1, cx1) - max(px0, cx0))
-                    gap_y = py0 - cy1
-                    
-                    # Merge if overlapping horizontally and vertically close (gap between lines <= 0.5 * font_size)
-                    # This tightly groups paragraphs but separates table rows.
-                    if overlap_x > 0 and -20 <= gap_y <= (phrase_spans[0].get("size", 12) * 0.5):
-                        chunk["phrases"].append(phrase_spans)
-                        chunk["bbox"] = [min(cx0, px0), min(cy0, py0), max(cx1, px1), max(cy1, py1)]
-                        merged = True
-                        break
+                h = py1 - py0
+                py0 = max(0, py0 - h * 0.1)
+                py1 = min(page.rect.height, py1 + h * 0.1)
                 
-                if not merged:
-                    chunks.append({
-                        "phrases": [phrase_spans],
-                        "bbox": [px0, py0, px1, py1]
-                    })
+                chunks.append({
+                    "phrases": all_phrases,
+                    "bbox": [px0, py0, px1, py1]
+                })
                     
             # 3. Create items from chunks
             for chunk in chunks:
@@ -469,7 +526,6 @@ def run_translation(job_id, src_path):
 
             raw_translated = sanitize_text(cache.get(item["text"], item["text"]))
             # Keep the spaces from Google Translate instead of stripping and using zero-width spaces.
-            # Zero-width spaces can cause PyMuPDF to render overlapping Thai characters.
             translated = raw_translated
 
             min_scale = 0.40
@@ -482,7 +538,8 @@ def run_translation(job_id, src_path):
             num_lines = html_text.count('<br>') + 1
             box_height = rect.y1 - rect.y0
             calculated_lineheight = (box_height / num_lines) / size if size > 0 else 1.05
-            lineheight = max(1.0, min(calculated_lineheight, 3.0))
+            # Adjust max lineheight for table cells which have expanded bounding boxes
+            lineheight = max(1.0, min(calculated_lineheight, 2.0))
 
             html = f"""<div style="font-family: sans-serif; font-size: {size}pt; font-weight: {font_weight}; color: {color_hex}; line-height: {lineheight}; text-align: left; margin: 0;">{html_text}</div>"""
             
