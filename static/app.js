@@ -29,9 +29,12 @@
 
     const previewScrollContainerEn = document.getElementById('preview-scroll-container-en');
     const previewScrollContainerTh = document.getElementById('preview-scroll-container-th');
+    const reloadBtn = document.getElementById('reload-btn');
 
     // ---- State ----
     let currentJobId = null;
+    let currentOrigFilename = null;
+    let currentDlFilename = null;
     let totalPages = 0;
     let eventSource = null;
 
@@ -73,6 +76,7 @@
         uploadScreen.style.display = 'flex';
         headerDocName.textContent = 'No Document Loaded';
         downloadBtn.style.display = 'none';
+        if (reloadBtn) reloadBtn.style.display = 'none';
         
         document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
     };
@@ -237,15 +241,27 @@
     }
 
     // ---- Workspace View (PDF.js Rendering for text selection) ----
-    async function renderPDF(url, container) {
+    let currentRenderSession = 0;
+
+    async function renderPDF(url, container, sessionId) {
         try {
             const loadingTask = pdfjsLib.getDocument(url);
             const pdf = await loadingTask.promise;
             
             // Calculate scale based on container width (accounting for padding)
-            const containerWidth = container.clientWidth - 64; // 32px padding on left/right
+            let containerWidth = container.clientWidth - 64; // 32px padding on left/right
+            if (containerWidth <= 0) {
+                // Fallback if clientWidth is 0 (e.g., container not fully visible yet)
+                const rect = container.getBoundingClientRect();
+                containerWidth = (rect.width || 600) - 64;
+                if (containerWidth <= 0) containerWidth = 600;
+            }
 
             for (let i = 1; i <= pdf.numPages; i++) {
+                if (currentRenderSession !== sessionId) {
+                    loadingTask.destroy();
+                    return;
+                }
                 const page = await pdf.getPage(i);
                 
                 // Get unscaled viewport to calculate ratio
@@ -313,21 +329,34 @@
         splitScreen.style.display = 'flex';
         
         currentJobId = jobId;
+        currentOrigFilename = origFilename;
+        currentDlFilename = dlFilename;
         headerDocName.textContent = origFilename;
 
         downloadBtn.style.display = 'flex';
+        if (reloadBtn) reloadBtn.style.display = 'flex';
         downloadBtn.href = '/download/' + jobId + '/' + encodeURIComponent(dlFilename);
 
         previewScrollContainerEn.innerHTML = '';
         previewScrollContainerTh.innerHTML = '';
 
+        currentRenderSession++;
+        const sessionId = currentRenderSession;
+
         // Wait a frame to ensure DOM is fully laid out so clientWidth is correct!
         setTimeout(() => {
+            if (currentRenderSession !== sessionId) return;
             // Load original and translated PDFs using PDF.js
-            renderPDF('/download_original/' + jobId, previewScrollContainerEn);
-            renderPDF('/download/' + jobId + '/' + encodeURIComponent(dlFilename), previewScrollContainerTh);
-        }, 50);
+            renderPDF('/download_original/' + jobId, previewScrollContainerEn, sessionId);
+            renderPDF('/download/' + jobId + '/' + encodeURIComponent(dlFilename), previewScrollContainerTh, sessionId);
+        }, 150);
     }
+
+    window.reloadWorkspace = function() {
+        if (currentJobId && currentOrigFilename && currentDlFilename) {
+            showWorkspace(currentJobId, currentOrigFilename, currentDlFilename);
+        }
+    };
 
     // ---- History ----
     async function loadHistory() {
@@ -352,7 +381,12 @@
                         <svg class="history-item-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                         <span class="history-item-title">${item.filename}</span>
                     </div>
-                    <span class="history-item-meta">${dateStr}</span>
+                    <div class="history-item-actions">
+                        <span class="history-item-meta">${dateStr}</span>
+                        <button class="delete-history-btn" title="ลบประวัติ" aria-label="Delete">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                        </button>
+                    </div>
                 `;
                 
                 div.addEventListener('click', () => {
@@ -365,6 +399,27 @@
                     
                     if (window.innerWidth <= 768) {
                         sidebarPane.classList.add('collapsed');
+                    }
+                });
+                
+                const deleteBtn = div.querySelector('.delete-history-btn');
+                deleteBtn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    if (confirm('คุณต้องการลบประวัติการแปลนี้ใช่หรือไม่?')) {
+                        try {
+                            const res = await fetch('/delete/' + item.job_id, { method: 'DELETE' });
+                            const result = await res.json();
+                            if (result.success) {
+                                if (currentJobId === item.job_id) {
+                                    resetToUpload();
+                                }
+                                loadHistory();
+                            } else {
+                                showToast(result.error || 'ไม่สามารถลบได้');
+                            }
+                        } catch (err) {
+                            showToast('เกิดข้อผิดพลาดในการลบ');
+                        }
                     }
                 });
                 

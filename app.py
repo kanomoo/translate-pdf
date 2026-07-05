@@ -158,42 +158,91 @@ def sanitize_text(text):
 # PDF text extraction
 # ---------------------------------------------------------------------------
 
-def block_text_info(block):
-    lines, sizes, colors, fonts, flags_list = [], [], [], [], []
-    for line in block.get("lines", []):
-        parts = []
-        for span in line.get("spans", []):
-            value = span.get("text", "")
-            if value:
-                parts.append(value)
-                sizes.append(span.get("size", 12))
-                colors.append(span.get("color", 0))
-                fonts.append(span.get("font", ""))
-                flags_list.append(span.get("flags", 0))
-        joined = "".join(parts).strip()
-        if joined:
-            lines.append(joined)
-
-    text = clean_text("\n".join(lines))
-    size = float(statistics.median(sizes)) if sizes else 12.0
-    color = colors[0] if colors else 0
-    bold = any("bold" in f.lower() for f in fonts) or any(fl & 16 for fl in flags_list)
-    return text, size, color, bold
-
-
 def extract_items(doc):
+    import statistics
     items = []
     for page_number, page in enumerate(doc):
         page_dict = page.get_text("dict")
         for block in page_dict.get("blocks", []):
             if block.get("type") != 0:
                 continue
-            
-            text, size, color, bold = block_text_info(block)
-            if text:
+                
+            # 1. Extract phrases by splitting lines on large horizontal gaps
+            phrases = []
+            for line in block.get("lines", []):
+                current_spans = []
+                for span in line.get("spans", []):
+                    text = span.get("text", "").strip()
+                    if not text:
+                        continue
+                    if not current_spans:
+                        current_spans.append(span)
+                        continue
+                    
+                    last_span = current_spans[-1]
+                    gap = span["bbox"][0] - last_span["bbox"][2]
+                    # If horizontal gap is larger than 1.5x font size, it's a separate phrase (e.g. column)
+                    if gap > (span.get("size", 12) * 1.5):
+                        phrases.append(current_spans)
+                        current_spans = [span]
+                    else:
+                        current_spans.append(span)
+                if current_spans:
+                    phrases.append(current_spans)
+                    
+            # 2. Merge phrases vertically into chunks if they horizontally overlap
+            chunks = []
+            for phrase_spans in phrases:
+                px0 = min(s["bbox"][0] for s in phrase_spans)
+                py0 = min(s["bbox"][1] for s in phrase_spans)
+                px1 = max(s["bbox"][2] for s in phrase_spans)
+                py1 = max(s["bbox"][3] for s in phrase_spans)
+                
+                merged = False
+                for chunk in chunks:
+                    cx0, cy0, cx1, cy1 = chunk["bbox"]
+                    overlap_x = max(0, min(px1, cx1) - max(px0, cx0))
+                    gap_y = py0 - cy1
+                    
+                    # Merge if overlapping horizontally and vertically close (gap between lines <= 0.5 * font_size)
+                    # This tightly groups paragraphs but separates table rows.
+                    if overlap_x > 0 and -20 <= gap_y <= (phrase_spans[0].get("size", 12) * 0.5):
+                        chunk["phrases"].append(phrase_spans)
+                        chunk["bbox"] = [min(cx0, px0), min(cy0, py0), max(cx1, px1), max(cy1, py1)]
+                        merged = True
+                        break
+                
+                if not merged:
+                    chunks.append({
+                        "phrases": [phrase_spans],
+                        "bbox": [px0, py0, px1, py1]
+                    })
+                    
+            # 3. Create items from chunks
+            for chunk in chunks:
+                lines_text = []
+                all_spans = []
+                for phrase in chunk["phrases"]:
+                    parts = []
+                    for s in phrase:
+                        parts.append(s["text"].strip())
+                        all_spans.append(s)
+                    line_str = " ".join(parts).strip()
+                    if line_str:
+                        lines_text.append(line_str)
+                        
+                text = clean_text("\n".join(lines_text))
+                if not text:
+                    continue
+                    
+                sizes = [s.get("size", 12) for s in all_spans]
+                size = float(statistics.median(sizes)) if sizes else 12.0
+                color = all_spans[0].get("color", 0) if all_spans else 0
+                bold = any("bold" in s.get("font", "").lower() for s in all_spans) or any(s.get("flags", 0) & 16 for s in all_spans)
+                
                 items.append({
                     "page": page_number,
-                    "bbox": list(block["bbox"]),
+                    "bbox": chunk["bbox"],
                     "text": text,
                     "size": size,
                     "color": color,
@@ -419,19 +468,22 @@ def run_translation(job_id, src_path):
             rect.y1 = min(page.rect.y1, rect.y1 + 1.0)
 
             raw_translated = sanitize_text(cache.get(item["text"], item["text"]))
-            # Remove spaces between Thai characters to prevent huge gaps when rendered
-            raw_translated = re.sub(r"(?<=[\u0E00-\u0E7F])\s+(?=[\u0E00-\u0E7F])", "", raw_translated)
-            
-            # Tokenize Thai words and join with zero-width space to allow PyMuPDF to wrap text gracefully without visible gaps
-            words = pythainlp.word_tokenize(raw_translated, engine="newmm")
-            translated = "\u200b".join(words)
+            # Keep the spaces from Google Translate instead of stripping and using zero-width spaces.
+            # Zero-width spaces can cause PyMuPDF to render overlapping Thai characters.
+            translated = raw_translated
 
             min_scale = 0.40
-            lineheight = 1.05
 
             color_hex = f"#{item['color']:06x}"
             font_weight = "bold" if item["bold"] else "normal"
             html_text = translated.replace('\n', '<br>')
+            
+            # Dynamic line-height calculation to match original bounding box
+            num_lines = html_text.count('<br>') + 1
+            box_height = rect.y1 - rect.y0
+            calculated_lineheight = (box_height / num_lines) / size if size > 0 else 1.05
+            lineheight = max(1.0, min(calculated_lineheight, 3.0))
+
             html = f"""<div style="font-family: sans-serif; font-size: {size}pt; font-weight: {font_weight}; color: {color_hex}; line-height: {lineheight}; text-align: left; margin: 0;">{html_text}</div>"""
             
             spare_height, scale = page.insert_htmlbox(
@@ -676,6 +728,51 @@ def get_history():
     # Sort descending by date
     history_list.sort(key=lambda x: x["created_at"], reverse=True)
     return jsonify({"history": history_list})
+
+@app.route("/delete/<job_id>", methods=["DELETE"])
+def delete_history(job_id):
+    # Security: Ensure job_id is alphanumeric (with underscores/hyphens)
+    import re
+    if not re.match(r"^[a-zA-Z0-9_-]+$", job_id):
+        return jsonify({"error": "รูปแบบรหัสงานไม่ถูกต้อง"}), 400
+
+    deleted_files = 0
+    
+    # 1. Delete translated file from OUTPUT_DIR
+    out_file = OUTPUT_DIR / f"{job_id}.pdf"
+    if out_file.exists():
+        try:
+            out_file.unlink()
+            deleted_files += 1
+        except Exception:
+            pass
+
+    # 2. Delete original file from UPLOAD_DIR
+    for upload_file in UPLOAD_DIR.glob(f"{job_id}_*"):
+        try:
+            upload_file.unlink()
+            deleted_files += 1
+        except Exception:
+            pass
+
+    # 3. Delete cache JSON if it exists
+    cache_file = CACHE_DIR / f"{job_id}.json"
+    if cache_file.exists():
+        try:
+            cache_file.unlink()
+            deleted_files += 1
+        except Exception:
+            pass
+            
+    # Remove from active jobs if somehow still there
+    with jobs_lock:
+        if job_id in jobs:
+            del jobs[job_id]
+
+    if deleted_files == 0:
+        return jsonify({"error": "ไม่พบประวัติการแปลดังกล่าว"}), 404
+        
+    return jsonify({"success": True, "message": "ลบประวัติสำเร็จ"})
 
 
 # ---------------------------------------------------------------------------
