@@ -802,11 +802,13 @@ body.theme-light .upload-container {
   width: var(--split-ratio);
   border-right: 1px solid var(--border);
   background: transparent;
+  padding: 32px 10px 32px 32px;
 }
 
 .pane-right {
   width: calc(100% - var(--split-ratio));
   background: rgba(255, 255, 255, 0.01);
+  padding: 32px 32px 32px 10px;
 }
 
 body.theme-light .pane-right {
@@ -836,7 +838,7 @@ body.theme-light .pane-right {
   background-repeat: no-repeat;
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 32px;
+  padding: 24px;
   min-height: 100%;
   box-shadow: 0 4px 30px rgba(0, 0, 0, 0.15);
   font-family: var(--font-body);
@@ -845,6 +847,16 @@ body.theme-light .pane-right {
   line-height: 1.7;
   position: relative;
   transition: border-color 0.3s ease, background-color 0.4s ease;
+  width: 100%;
+  max-width: 850px;
+  zoom: var(--pdf-zoom, 1);
+}
+
+.pane-left .document-page-card {
+  margin: 0 0 0 auto;
+}
+.pane-right .document-page-card {
+  margin: 0 auto 0 0;
 }
 
 body.theme-light .document-page-card {

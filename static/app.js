@@ -241,27 +241,43 @@
         try {
             const loadingTask = pdfjsLib.getDocument(url);
             const pdf = await loadingTask.promise;
+            
+            // Calculate scale based on container width (accounting for padding)
+            const containerWidth = container.clientWidth - 64; // 32px padding on left/right
+
             for (let i = 1; i <= pdf.numPages; i++) {
                 const page = await pdf.getPage(i);
-                const viewport = page.getViewport({ scale: 1.5 });
+                
+                // Get unscaled viewport to calculate ratio
+                const unscaledViewport = page.getViewport({ scale: 1.0 });
+                const scale = containerWidth / unscaledViewport.width;
+                const viewport = page.getViewport({ scale: scale });
                 
                 const pageDiv = document.createElement('div');
                 pageDiv.className = 'pdf-page-container';
                 pageDiv.style.position = 'relative';
                 pageDiv.style.marginBottom = '20px';
+                pageDiv.style.margin = '0 auto 20px auto';
                 pageDiv.style.width = viewport.width + 'px';
                 pageDiv.style.height = viewport.height + 'px';
+                pageDiv.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+                pageDiv.style.backgroundColor = 'white'; // Ensure PDF background is white
                 
+                const outputScale = window.devicePixelRatio || 1;
+
                 const canvas = document.createElement('canvas');
-                canvas.width = viewport.width;
-                canvas.height = viewport.height;
+                canvas.width = Math.floor(viewport.width * outputScale);
+                canvas.height = Math.floor(viewport.height * outputScale);
                 canvas.style.display = 'block';
-                canvas.className = 'preview-img';
+                canvas.style.width = viewport.width + 'px';
+                canvas.style.height = viewport.height + 'px';
                 pageDiv.appendChild(canvas);
                 
                 const context = canvas.getContext('2d');
+                const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
                 const renderContext = {
                     canvasContext: context,
+                    transform: transform,
                     viewport: viewport
                 };
                 
@@ -305,9 +321,12 @@
         previewScrollContainerEn.innerHTML = '';
         previewScrollContainerTh.innerHTML = '';
 
-        // Load original and translated PDFs using PDF.js
-        renderPDF('/download_original/' + jobId, previewScrollContainerEn);
-        renderPDF('/download/' + jobId + '/' + encodeURIComponent(dlFilename), previewScrollContainerTh);
+        // Wait a frame to ensure DOM is fully laid out so clientWidth is correct!
+        setTimeout(() => {
+            // Load original and translated PDFs using PDF.js
+            renderPDF('/download_original/' + jobId, previewScrollContainerEn);
+            renderPDF('/download/' + jobId + '/' + encodeURIComponent(dlFilename), previewScrollContainerTh);
+        }, 50);
     }
 
     // ---- History ----
@@ -413,6 +432,12 @@
         document.getElementById('split-val-display').textContent = val + '%';
         const resizer = document.getElementById('split-handler');
         resizer.style.left = `calc(${val}% - 4px)`;
+    };
+
+    window.adjustPdfZoom = function(val) {
+        const zoomLevel = val / 100.0;
+        document.documentElement.style.setProperty('--pdf-zoom', zoomLevel);
+        document.getElementById('zoom-val-display').textContent = val + '%';
     };
 
     // Split panel resizing drag handle
