@@ -158,8 +158,21 @@ def sanitize_text(text):
 # PDF text extraction
 # ---------------------------------------------------------------------------
 
-def extract_items(doc):
+def extract_items(doc, parsing_mode="auto"):
     import statistics
+    import re
+    
+    # Determine gap threshold based on parsing mode
+    # Default auto: 1.5
+    # Dense: 0.5 (for tables)
+    # Continuous: 1.8 (for justified text)
+    if parsing_mode == "dense":
+        gap_threshold_multiplier = 0.5
+    elif parsing_mode == "continuous":
+        gap_threshold_multiplier = 1.8
+    else:
+        gap_threshold_multiplier = 1.5
+        
     items = []
     for page_number, page in enumerate(doc):
         page_dict = page.get_text("dict")
@@ -178,17 +191,19 @@ def extract_items(doc):
             if not all_spans:
                 continue
 
-            # 2. Group spans into physical rows based on y-coordinate overlap
+            # 2. Group spans into physical rows based on y-coordinate centers
             rows = []
             for span in all_spans:
                 py0, py1 = span["bbox"][1], span["bbox"][3]
+                py_center = (py0 + py1) / 2
                 placed = False
                 for row in rows:
                     ry0, ry1 = row["core_bbox"][1], row["core_bbox"][3]
-                    overlap = max(0, min(py1, ry1) - max(py0, ry0))
+                    ry_center = (ry0 + ry1) / 2
                     
                     min_height = min(py1 - py0, ry1 - ry0)
-                    if overlap > min_height * 0.5:
+                    # They belong to the same row if their vertical centers are close
+                    if abs(py_center - ry_center) < min_height * 0.4:
                         row["spans"].append(span)
                         row["bbox"] = [
                             min(row["bbox"][0], span["bbox"][0]),
@@ -208,7 +223,41 @@ def extract_items(doc):
             # 3. Sort spans within each row from left to right, and group into phrases
             is_table = False
             row_phrases = []
-            import re
+            
+            # 3.1 Pre-calculate column boundaries for robust table detection
+            column_x0s = []
+            for row in rows:
+                sorted_spans = sorted(row["spans"], key=lambda s: s["bbox"][0])
+                for i, span in enumerate(sorted_spans):
+                    gap = 9999
+                    if i > 0:
+                        prev_span = sorted_spans[i-1]
+                        estimated_width = len(prev_span.get("text", "").strip()) * prev_span.get("size", 12) * 0.8
+                        real_x1 = min(prev_span["bbox"][2], prev_span["bbox"][0] + estimated_width)
+                        gap = span["bbox"][0] - real_x1
+                        
+                    column_x0s.append({
+                        "x0": span["bbox"][0],
+                        "gap": gap,
+                        "size": span.get("size", 12)
+                    })
+                    
+            clusters = []
+            for item in sorted(column_x0s, key=lambda x: x["x0"]):
+                if not clusters:
+                    clusters.append([item])
+                elif item["x0"] - clusters[-1][-1]["x0"] < 15.0:
+                    clusters[-1].append(item)
+                else:
+                    clusters.append([item])
+            
+            column_boundaries = []
+            for c in clusters:
+                if len(c) >= 2:
+                    is_valid = len(c) >= 3 or any(item["gap"] > item["size"] * 1.5 or item["gap"] == 9999 for item in c)
+                    if is_valid:
+                        column_boundaries.append(sum(item["x0"] for item in c) / len(c))
+            
             for row in rows:
                 sorted_spans = sorted(row["spans"], key=lambda s: s["bbox"][0])
                 phrases = []
@@ -219,9 +268,24 @@ def extract_items(doc):
                         continue
                     
                     last_span = current_spans[-1]
-                    gap = span["bbox"][0] - last_span["bbox"][2]
                     
-                    if gap > (span.get("size", 12) * 0.4):
+                    # Fix artificially wide bounding boxes
+                    last_text = "".join(s["text"] for s in current_spans).strip()
+                    estimated_width = len(last_text) * span.get("size", 12) * 0.8
+                    real_x1 = min(last_span["bbox"][2], current_spans[0]["bbox"][0] + estimated_width)
+                    
+                    gap = span["bbox"][0] - real_x1
+                    
+                    # Force split if the new span perfectly aligns with a known column boundary
+                    # (and the current phrase isn't already part of that same column)
+                    is_col_boundary = False
+                    for b in column_boundaries:
+                        if abs(span["bbox"][0] - b) < 15.0:
+                            if abs(current_spans[0]["bbox"][0] - b) > 15.0:
+                                is_col_boundary = True
+                            break
+                            
+                    if is_col_boundary or gap > (span.get("size", 12) * gap_threshold_multiplier):
                         prev_text = "".join(s["text"] for s in current_spans).strip()
                         if bool(re.match(r'^(\d+[\.\)]|[•\-\*>])$', prev_text)):
                             # Treat bullet point as part of the same phrase
@@ -412,7 +476,7 @@ def emit(job_id, event_type, data):
 # Translation pipeline (runs in background thread)
 # ---------------------------------------------------------------------------
 
-def run_translation(job_id, src_path):
+def run_translation(job_id, src_path, parsing_mode="auto"):
     """Full translation pipeline with progress events."""
     try:
         emit(job_id, "stage", {"stage": "extracting", "message": "กำลังอ่านไฟล์ PDF..."})
@@ -422,7 +486,7 @@ def run_translation(job_id, src_path):
         emit(job_id, "info", {"pages": total_pages, "filename": src_path.name})
 
         # Extract text blocks
-        items = extract_items(doc)
+        items = extract_items(doc, parsing_mode)
         emit(job_id, "stage", {"stage": "translating", "message": f"พบ {len(items)} ข้อความ กำลังแปล..."})
 
         # Load/build cache
@@ -530,13 +594,18 @@ def run_translation(job_id, src_path):
         for index, item in enumerate(items, 1):
             page = doc[item["page"]]
             original_size = item["size"]
-            size = original_size * 0.85
+            size = original_size * 0.9  # Use 90% of original size to fit Thai better
             rect = fitz.Rect(item["bbox"])
             
+            # Clamp rectangle to page boundaries to avoid rendering off-page
             rect.x0 = max(page.rect.x0, rect.x0 - 0.5)
             rect.y0 = max(page.rect.y0, rect.y0 - 0.5)
             rect.x1 = min(page.rect.x1, rect.x1 + 1.0)
             rect.y1 = min(page.rect.y1, rect.y1 + 1.0)
+            
+            # Allow HTML text box to expand vertically slightly so it doesn't shrink the font too much
+            text_rect = fitz.Rect(rect)
+            text_rect.y1 += (text_rect.y1 - text_rect.y0) * 0.2
 
             raw_translated = sanitize_text(cache.get(item["text"], item["text"]))
             # Keep the spaces from Google Translate instead of stripping and using zero-width spaces.
@@ -548,17 +617,16 @@ def run_translation(job_id, src_path):
             font_weight = "bold" if item["bold"] else "normal"
             html_text = translated.replace('\n', '<br>')
             
-            # Dynamic line-height calculation to match original bounding box
+            # Dynamic line-height calculation
             num_lines = html_text.count('<br>') + 1
-            box_height = rect.y1 - rect.y0
+            box_height = text_rect.y1 - text_rect.y0
             calculated_lineheight = (box_height / num_lines) / size if size > 0 else 1.05
-            # Adjust max lineheight for table cells which have expanded bounding boxes
-            lineheight = max(1.0, min(calculated_lineheight, 2.0))
+            lineheight = max(1.0, min(calculated_lineheight, 1.5))
 
             html = f"""<div style="font-family: sans-serif; font-size: {size}pt; font-weight: {font_weight}; color: {color_hex}; line-height: {lineheight}; text-align: left; margin: 0; margin-top: -0.2em;">{html_text}</div>"""
             
             spare_height, scale = page.insert_htmlbox(
-                rect, html,
+                text_rect, html,
                 scale_low=min_scale
             )
 
@@ -622,6 +690,8 @@ def upload():
     safe_name = re.sub(r'[^\w\-.]', '_', file.filename)
     src_path = UPLOAD_DIR / f"{job_id}_{safe_name}"
     file.save(str(src_path))
+    
+    parsing_mode = request.form.get("parsing_mode", "auto")
 
     # Get page count
     try:
@@ -642,7 +712,7 @@ def upload():
         }
 
     # Start background translation
-    thread = threading.Thread(target=run_translation, args=(job_id, src_path), daemon=True)
+    thread = threading.Thread(target=run_translation, args=(job_id, src_path, parsing_mode), daemon=True)
     thread.start()
 
     return jsonify({

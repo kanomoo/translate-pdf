@@ -112,6 +112,16 @@
         if (fileInput.files.length > 0) handleFileSelect(fileInput.files[0]);
     });
 
+    // ---- Parsing Mode UI ----
+    document.querySelectorAll('.parsing-mode-option').forEach(option => {
+        option.addEventListener('click', function() {
+            document.querySelectorAll('.parsing-mode-option').forEach(opt => opt.classList.remove('active'));
+            this.classList.add('active');
+            const radio = this.querySelector('input[type="radio"]');
+            if (radio) radio.checked = true;
+        });
+    });
+
     function handleFileSelect(file) {
         if (!file.name.toLowerCase().endsWith('.pdf')) {
             showToast('กรุณาเลือกไฟล์ PDF เท่านั้น');
@@ -142,6 +152,9 @@
 
         const formData = new FormData();
         formData.append('file', file);
+        
+        const selectedMode = document.querySelector('input[name="parsing_mode"]:checked')?.value || 'auto';
+        formData.append('parsing_mode', selectedMode);
 
         try {
             const response = await fetch('/upload', {
@@ -248,6 +261,37 @@
             const loadingTask = pdfjsLib.getDocument(url);
             const pdf = await loadingTask.promise;
             
+            if (currentRenderSession !== sessionId) return;
+            
+            // Setup responsive scaling observer
+            if (!container._resizeObserver) {
+                container._resizeObserver = new ResizeObserver(entries => {
+                    for (let entry of entries) {
+                        const newWidth = entry.contentRect.width - 40;
+                        if (newWidth <= 0) continue;
+                        
+                        container.querySelectorAll('.pdf-page-container').forEach(pageDiv => {
+                            const baseWidth = parseFloat(pageDiv.dataset.baseWidth);
+                            if (!baseWidth) return;
+                            
+                            // Combine layout scaling with manual user zoom
+                            const userZoom = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--pdf-zoom').trim()) || 1.0;
+                            const layoutScale = newWidth / baseWidth;
+                            const finalScale = layoutScale * userZoom;
+                            
+                            pageDiv.style.transform = `scale(${finalScale})`;
+                            pageDiv.style.transformOrigin = 'top center';
+                            
+                            const baseHeight = parseFloat(pageDiv.dataset.baseHeight);
+                            const scaledHeight = baseHeight * finalScale;
+                            const diff = scaledHeight - baseHeight;
+                            pageDiv.style.marginBottom = `${20 + diff}px`;
+                        });
+                    }
+                });
+                container._resizeObserver.observe(container);
+            }
+            
             // Calculate scale based on container width (accounting for padding)
             let containerWidth = container.clientWidth - 64; // 32px padding on left/right
             if (containerWidth <= 0) {
@@ -272,14 +316,16 @@
                 const pageDiv = document.createElement('div');
                 pageDiv.className = 'pdf-page-container';
                 pageDiv.style.position = 'relative';
-                pageDiv.style.marginBottom = '20px';
                 pageDiv.style.margin = '0 auto 20px auto';
                 pageDiv.style.width = viewport.width + 'px';
                 pageDiv.style.height = viewport.height + 'px';
                 pageDiv.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
                 pageDiv.style.backgroundColor = 'white'; // Ensure PDF background is white
                 
-                const outputScale = window.devicePixelRatio || 1;
+                pageDiv.dataset.baseWidth = viewport.width;
+                pageDiv.dataset.baseHeight = viewport.height;
+                
+                const outputScale = (window.devicePixelRatio || 1) * 1.5; // Render at 1.5x resolution for sharper scaling
 
                 const canvas = document.createElement('canvas');
                 canvas.width = Math.floor(viewport.width * outputScale);
@@ -495,6 +541,14 @@
         const zoomLevel = val / 100.0;
         document.documentElement.style.setProperty('--pdf-zoom', zoomLevel);
         document.getElementById('zoom-val-display').textContent = val + '%';
+        
+        // Trigger a fake resize to update the observer
+        const paneLeft = document.getElementById('pane-left');
+        if (paneLeft && paneLeft.querySelector('.pdf-preview-scroll-container')._resizeObserver) {
+            // A slight style tweak triggers ResizeObserver
+            paneLeft.style.paddingTop = '1px';
+            setTimeout(() => paneLeft.style.paddingTop = '0', 0);
+        }
     };
 
     // Split panel resizing drag handle
