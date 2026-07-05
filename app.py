@@ -569,11 +569,26 @@ def download(job_id, filename):
         if not out_path.exists():
             return jsonify({"error": "ไฟล์ยังไม่พร้อม หรือไม่พบไฟล์"}), 404
 
-    # We use the filename passed in the URL (which usually has _TH.pdf already)
     return send_file(
         str(out_path),
         as_attachment=False,
         download_name=filename,
+        mimetype="application/pdf",
+    )
+
+
+@app.route("/download_original/<job_id>")
+def download_original(job_id):
+    """Serve the original PDF file."""
+    matching_uploads = list(UPLOAD_DIR.glob(f"{job_id}_*"))
+    if not matching_uploads:
+        return jsonify({"error": "ไม่พบไฟล์ต้นฉบับ"}), 404
+        
+    orig_path = matching_uploads[0]
+    return send_file(
+        str(orig_path),
+        as_attachment=False,
+        download_name=orig_path.name,
         mimetype="application/pdf",
     )
 
@@ -601,6 +616,33 @@ def preview(job_id, page):
     return Response(img_bytes, mimetype="image/png", headers={
         "Cache-Control": "public, max-age=3600",
     })
+
+
+@app.route("/preview_original/<job_id>/<int:page>")
+def preview_original(job_id, page):
+    """Render a page of the original PDF as a PNG image."""
+    # Find original file in UPLOAD_DIR
+    matching_uploads = list(UPLOAD_DIR.glob(f"{job_id}_*"))
+    if not matching_uploads:
+        return jsonify({"error": "ไม่พบไฟล์ต้นฉบับ"}), 404
+        
+    orig_path = matching_uploads[0]
+
+    try:
+        doc = fitz.open(str(orig_path))
+        if page < 0 or page >= len(doc):
+            doc.close()
+            return jsonify({"error": "หน้าไม่ถูกต้อง"}), 404
+
+        pix = doc[page].get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+        img_bytes = pix.tobytes("png")
+        doc.close()
+
+        return Response(img_bytes, mimetype="image/png", headers={
+            "Cache-Control": "public, max-age=3600",
+        })
+    except Exception as e:
+        return jsonify({"error": f"Error: {str(e)}"}), 500
 
 @app.route("/history")
 def get_history():

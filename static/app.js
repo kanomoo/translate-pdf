@@ -1,6 +1,5 @@
 /**
- * PDF Translator — Frontend Logic
- * Handles file upload, SSE progress streaming, preview, and download.
+ * PDF Translator — Frontend Logic (Next.js B&W Theme)
  */
 
 (function () {
@@ -9,146 +8,90 @@
     // ---- DOM Elements ----
     const dropZone = document.getElementById('drop-zone');
     const fileInput = document.getElementById('file-input');
-    const browseBtn = document.getElementById('browse-btn');
 
-    const uploadSection = document.getElementById('upload-section');
-    const fileInfoSection = document.getElementById('file-info-section');
-    const progressSection = document.getElementById('progress-section');
-    const completeSection = document.getElementById('complete-section');
-    const errorSection = document.getElementById('error-section');
+    const uploadScreen = document.getElementById('upload-screen');
+    const processingScreen = document.getElementById('processing-screen');
+    const splitScreen = document.getElementById('split-screen');
 
-    const appSidebar = document.getElementById('app-sidebar');
-    const sidebarToggleBtn = document.getElementById('sidebar-toggle-btn');
-    const sidebarCloseBtn = document.getElementById('sidebar-close-btn');
-    const newTranslationBtn = document.getElementById('new-translation-btn');
-    const historyList = document.getElementById('history-list');
-    const refreshHistoryBtn = document.getElementById('refresh-history-btn');
+    const sidebarPane = document.getElementById('sidebar-pane');
+    const historyContainer = document.getElementById('history-group-container');
 
-    const fileName = document.getElementById('file-name');
-    const fileSize = document.getElementById('file-size');
-    const filePages = document.getElementById('file-pages');
-    const removeFileBtn = document.getElementById('remove-file-btn');
-    const translateBtn = document.getElementById('translate-btn');
+    const headerDocName = document.getElementById('header-doc-name');
+    const downloadBtn = document.getElementById('download-btn');
 
     const progressStage = document.getElementById('progress-stage');
     const progressDetail = document.getElementById('progress-detail');
-    const progressFill = document.getElementById('progress-fill');
-    const progressPercent = document.getElementById('progress-percent');
+    const progressFill = document.getElementById('progress-bar');
+    
+    const step1 = document.getElementById('step-1');
+    const step2 = document.getElementById('step-2');
+    const step3 = document.getElementById('step-3');
 
-    const completeDetail = document.getElementById('complete-detail');
-    const downloadBtn = document.getElementById('download-btn');
-    const newFileBtn = document.getElementById('new-file-btn');
-
-    const previewSection = document.getElementById('preview-section');
-    const previewImg = document.getElementById('preview-img');
-    const pageIndicator = document.getElementById('page-indicator');
-    const prevPageBtn = document.getElementById('prev-page-btn');
-    const nextPageBtn = document.getElementById('next-page-btn');
-
-    const errorMessage = document.getElementById('error-message');
-    const retryBtn = document.getElementById('retry-btn');
+    const previewScrollContainerEn = document.getElementById('preview-scroll-container-en');
+    const previewScrollContainerTh = document.getElementById('preview-scroll-container-th');
 
     // ---- State ----
-    let selectedFile = null;
     let currentJobId = null;
     let totalPages = 0;
-    let currentPreviewPage = 0;
     let eventSource = null;
 
     // ---- Helpers ----
-    function formatFileSize(bytes) {
-        if (bytes < 1024) return bytes + ' B';
-        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    window.showToast = function(msg) {
+        const toast = document.getElementById('toast-notif');
+        document.getElementById('toast-message').textContent = msg;
+        toast.classList.add('show');
+        setTimeout(() => {
+            toast.classList.remove('show');
+        }, 2200);
+    };
+
+    function setStep(stepNum, status) {
+        const el = document.getElementById('step-' + stepNum);
+        if (!el) return;
+        el.className = 'step-item ' + status;
+        const dot = el.querySelector('.step-dot');
+        dot.innerHTML = status === 'completed' ? '✓' : '';
     }
 
-    function showSection(section) {
-        [uploadSection, fileInfoSection, progressSection, completeSection, errorSection]
-            .forEach(s => {
-                if (s === section) {
-                    s.classList.remove('hidden');
-                    s.style.animation = 'none';
-                    // Force reflow
-                    void s.offsetHeight;
-                    s.style.animation = '';
-                } else {
-                    s.classList.add('hidden');
-                }
-            });
-    }
+    // ---- Sidebar Toggle ----
+    window.toggleSidebar = function() {
+        sidebarPane.classList.toggle('collapsed');
+        showToast(sidebarPane.classList.contains('collapsed') ? 'Sidebar hidden' : 'Sidebar visible');
+    };
 
-    function setStageActive(stageName) {
-        const stages = ['extracting', 'translating', 'building'];
-        const stageItems = document.querySelectorAll('.stage-item');
-        const connectors = document.querySelectorAll('.stage-connector');
-
-        const activeIndex = stages.indexOf(stageName);
-        stageItems.forEach((item, i) => {
-            item.classList.remove('active', 'done');
-            if (i < activeIndex) item.classList.add('done');
-            else if (i === activeIndex) item.classList.add('active');
-        });
-        connectors.forEach((conn, i) => {
-            conn.classList.toggle('done', i < activeIndex);
-        });
-    }
-
-    // ---- Sidebar Toggle (Mobile) ----
-    if (sidebarToggleBtn) {
-        sidebarToggleBtn.addEventListener('click', () => {
-            appSidebar.classList.toggle('open');
-        });
-    }
-
-    if (sidebarCloseBtn) {
-        sidebarCloseBtn.addEventListener('click', () => {
-            appSidebar.classList.remove('open');
-        });
-    }
-
-    // Close sidebar when clicking outside on mobile
-    document.addEventListener('click', (e) => {
-        if (appSidebar && appSidebar.classList.contains('open') && 
-            !appSidebar.contains(e.target) && 
-            !sidebarToggleBtn.contains(e.target)) {
-            appSidebar.classList.remove('open');
+    window.resetToUpload = function() {
+        currentJobId = null;
+        totalPages = 0;
+        fileInput.value = '';
+        if(eventSource) {
+            eventSource.close();
+            eventSource = null;
         }
-    });
 
-    // ---- New Translation ----
-    if (newTranslationBtn) {
-        newTranslationBtn.addEventListener('click', () => {
-            currentJobId = null;
-            selectedFile = null;
-            fileInput.value = '';
-            totalPages = 0;
-            currentPreviewPage = 0;
-            previewSection.classList.add('hidden');
-            
-            // clear active state from history items
-            document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
-            
-            showSection(uploadSection);
-            if (window.innerWidth <= 860) {
-                appSidebar.classList.remove('open');
-            }
-        });
-    }
+        splitScreen.style.display = 'none';
+        processingScreen.style.display = 'none';
+        uploadScreen.style.display = 'flex';
+        headerDocName.textContent = 'No Document Loaded';
+        downloadBtn.style.display = 'none';
+        
+        document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
+    };
+
+    // Initialize UI
+    resetToUpload();
 
     // ---- Drag & Drop ----
-    ['dragenter', 'dragover'].forEach(event => {
-        dropZone.addEventListener(event, (e) => {
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropZone.addEventListener(eventName, (e) => {
             e.preventDefault();
-            e.stopPropagation();
-            dropZone.classList.add('drag-over');
+            dropZone.classList.add('dragover');
         });
     });
 
-    ['dragleave', 'drop'].forEach(event => {
-        dropZone.addEventListener(event, (e) => {
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, (e) => {
             e.preventDefault();
-            e.stopPropagation();
-            dropZone.classList.remove('drag-over');
+            dropZone.classList.remove('dragover');
         });
     });
 
@@ -157,14 +100,7 @@
         if (files.length > 0) handleFileSelect(files[0]);
     });
 
-    dropZone.addEventListener('click', (e) => {
-        if (e.target.closest('#browse-btn') || e.target === dropZone || e.target.closest('.drop-zone-content')) {
-            fileInput.click();
-        }
-    });
-
-    browseBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
+    dropZone.addEventListener('click', () => {
         fileInput.click();
     });
 
@@ -172,44 +108,33 @@
         if (fileInput.files.length > 0) handleFileSelect(fileInput.files[0]);
     });
 
-    // ---- File Selection ----
     function handleFileSelect(file) {
         if (!file.name.toLowerCase().endsWith('.pdf')) {
-            showError('กรุณาเลือกไฟล์ PDF เท่านั้น');
+            showToast('กรุณาเลือกไฟล์ PDF เท่านั้น');
             return;
         }
         if (file.size > 100 * 1024 * 1024) {
-            showError('ไฟล์ใหญ่เกินไป (สูงสุด 100 MB)');
+            showToast('ไฟล์ใหญ่เกินไป (สูงสุด 100 MB)');
             return;
         }
-
-        selectedFile = file;
-        fileName.textContent = file.name;
-        fileSize.textContent = formatFileSize(file.size);
-        filePages.textContent = 'กำลังอ่าน...';
-
-        showSection(fileInfoSection);
+        uploadAndTranslate(file);
     }
 
-    removeFileBtn.addEventListener('click', () => {
-        selectedFile = null;
-        fileInput.value = '';
-        showSection(uploadSection);
-    });
-
-    // ---- Translation ----
-    translateBtn.addEventListener('click', () => {
-        if (!selectedFile) return;
-        uploadAndTranslate(selectedFile);
-    });
-
+    // ---- Translation Flow ----
     async function uploadAndTranslate(file) {
-        showSection(progressSection);
-        progressFill.style.width = '0%';
-        progressPercent.textContent = '0%';
+        uploadScreen.style.display = 'none';
+        splitScreen.style.display = 'none';
+        processingScreen.style.display = 'flex';
+        downloadBtn.style.display = 'none';
+        headerDocName.textContent = file.name;
+
+        progressFill.style.width = '5%';
         progressStage.textContent = 'กำลังอัปโหลด...';
         progressDetail.textContent = 'กำลังส่งไฟล์ไปยังเซิร์ฟเวอร์';
-        setStageActive('');
+        
+        setStep(1, 'active');
+        setStep(2, '');
+        setStep(3, '');
 
         const formData = new FormData();
         formData.append('file', file);
@@ -223,66 +148,54 @@
             const data = await response.json();
 
             if (!response.ok) {
-                showError(data.error || 'เกิดข้อผิดพลาดในการอัปโหลด');
+                showToast(data.error || 'เกิดข้อผิดพลาดในการอัปโหลด');
+                resetToUpload();
                 return;
             }
 
             currentJobId = data.job_id;
             totalPages = data.pages || 0;
-            filePages.textContent = totalPages + ' หน้า';
-
+            
             // Connect to SSE progress
-            connectProgress(data.job_id);
+            connectProgress(data.job_id, file.name);
 
         } catch (err) {
-            showError('ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์: ' + err.message);
+            showToast('ไม่สามารถเชื่อมต่อกับเซิร์ฟเวอร์');
+            resetToUpload();
         }
     }
 
-    function connectProgress(jobId) {
-        if (eventSource) {
-            eventSource.close();
-        }
+    function connectProgress(jobId, filename) {
+        if (eventSource) eventSource.close();
 
         eventSource = new EventSource('/progress/' + jobId);
 
         eventSource.addEventListener('stage', (e) => {
             const data = JSON.parse(e.data);
             progressStage.textContent = data.message || data.stage;
-            setStageActive(data.stage);
 
             if (data.stage === 'extracting') {
-                progressDetail.textContent = 'กำลังอ่านข้อความจากไฟล์ PDF';
+                setStep(1, 'active');
             } else if (data.stage === 'translating') {
-                progressDetail.textContent = 'กำลังแปลข้อความเป็นภาษาไทย';
+                setStep(1, 'completed');
+                setStep(2, 'active');
             } else if (data.stage === 'building') {
-                progressDetail.textContent = 'กำลังสร้างไฟล์ PDF ใหม่';
+                setStep(2, 'completed');
+                setStep(3, 'active');
             }
         });
 
         eventSource.addEventListener('info', (e) => {
             const data = JSON.parse(e.data);
-            if (data.pages) {
-                totalPages = data.pages;
-                filePages.textContent = totalPages + ' หน้า';
-            }
+            if (data.pages) totalPages = data.pages;
         });
 
         eventSource.addEventListener('progress', (e) => {
             const data = JSON.parse(e.data);
             let pct = data.percent || 0;
 
-            // Map sub-step percentages to overall progress
-            if (data.step === 'translate') {
-                pct = Math.round(pct * 0.6);  // Translation is 0-60%
-            } else if (data.step === 'build_redact') {
-                pct = 60 + Math.round(pct * 0.2);  // Redaction is 60-80%
-            } else if (data.step === 'build_insert') {
-                pct = 80 + Math.round(pct * 0.2);  // Insertion is 80-100%
-            }
-
+            // Map backend percent (0-100% total)
             progressFill.style.width = pct + '%';
-            progressPercent.textContent = pct + '%';
 
             if (data.step === 'translate') {
                 progressDetail.textContent = `แปลแล้ว ${data.current}/${data.total} ชุด`;
@@ -299,25 +212,15 @@
             eventSource = null;
 
             totalPages = data.pages || totalPages;
-            currentPreviewPage = 0;
+            setStep(3, 'completed');
+            progressFill.style.width = '100%';
+            progressStage.textContent = data.message;
+            progressDetail.textContent = `แปลสำเร็จ ${totalPages} หน้า`;
 
-            completeDetail.textContent = `แปลสำเร็จ ${totalPages} หน้า`;
-            if (data.shrunk > 0 || data.clipped > 0) {
-                completeDetail.textContent += ` (ปรับขนาด ${data.shrunk}, ตัดข้อความ ${data.clipped})`;
-            }
-
-            const dlName = data.filename || 'translated.pdf';
-            downloadBtn.href = '/download/' + currentJobId + '/' + encodeURIComponent(dlName);
-            downloadBtn.target = '_blank';
-
-            showSection(completeSection);
-
-            // Show preview
-            if (totalPages > 0) {
-                previewSection.classList.remove('hidden');
-                loadPreview(0);
-                updatePageIndicator();
-            }
+            setTimeout(() => {
+                showWorkspace(jobId, filename, data.filename || 'translated.pdf');
+                loadHistory(); // refresh history
+            }, 800);
         });
 
         eventSource.addEventListener('error', (e) => {
@@ -328,210 +231,254 @@
             } catch (_) {}
             eventSource.close();
             eventSource = null;
-            showError(msg);
+            showToast(msg);
+            resetToUpload();
         });
-
-        eventSource.onerror = () => {
-            // SSE connection lost
-            if (eventSource) {
-                eventSource.close();
-                eventSource = null;
-                showError('การเชื่อมต่อกับเซิร์ฟเวอร์ขาดหาย');
-            }
-        };
     }
 
-    // ---- Preview ----
-    function loadPreview(page = 0) {
-        if (!currentJobId || totalPages === 0) return;
-        
-        const container = document.getElementById('preview-scroll-container');
-        const dropdown = document.getElementById('page-dropdown');
-        
-        if (container.children.length === 0) {
-            container.innerHTML = '';
-            dropdown.innerHTML = '';
-            
-            for (let i = 0; i < totalPages; i++) {
-                const opt = document.createElement('option');
-                opt.value = i;
-                opt.textContent = `หน้า ${i + 1} / ${totalPages}`;
-                dropdown.appendChild(opt);
+    // ---- Workspace View (PDF.js Rendering for text selection) ----
+    async function renderPDF(url, container) {
+        try {
+            const loadingTask = pdfjsLib.getDocument(url);
+            const pdf = await loadingTask.promise;
+            for (let i = 1; i <= pdf.numPages; i++) {
+                const page = await pdf.getPage(i);
+                const viewport = page.getViewport({ scale: 1.5 });
                 
-                const imgContainer = document.createElement('div');
-                imgContainer.className = 'preview-img-wrapper';
-                imgContainer.id = `preview-page-${i}`;
+                const pageDiv = document.createElement('div');
+                pageDiv.className = 'pdf-page-container';
+                pageDiv.style.position = 'relative';
+                pageDiv.style.marginBottom = '20px';
+                pageDiv.style.width = viewport.width + 'px';
+                pageDiv.style.height = viewport.height + 'px';
                 
-                const img = document.createElement('img');
-                img.src = '/preview/' + currentJobId + '/' + i + '?t=' + Date.now();
-                img.className = 'preview-img';
-                img.loading = 'lazy';
-                img.alt = `หน้า ${i + 1}`;
+                const canvas = document.createElement('canvas');
+                canvas.width = viewport.width;
+                canvas.height = viewport.height;
+                canvas.style.display = 'block';
+                canvas.className = 'preview-img';
+                pageDiv.appendChild(canvas);
                 
-                imgContainer.appendChild(img);
-                container.appendChild(imgContainer);
-            }
-            
-            const frame = document.getElementById('preview-frame');
-            frame.addEventListener('scroll', () => {
-                let activePage = currentPreviewPage;
-                const wrappers = document.querySelectorAll('.preview-img-wrapper');
-                const frameRect = frame.getBoundingClientRect();
-                const center = frameRect.top + frameRect.height / 2;
+                const context = canvas.getContext('2d');
+                const renderContext = {
+                    canvasContext: context,
+                    viewport: viewport
+                };
                 
-                wrappers.forEach(w => {
-                    const rect = w.getBoundingClientRect();
-                    if (rect.top <= center && rect.bottom >= center) {
-                        activePage = parseInt(w.id.replace('preview-page-', ''));
-                    }
+                // Render canvas
+                page.render(renderContext);
+                
+                // Render text layer
+                const textContent = await page.getTextContent();
+                const textLayerDiv = document.createElement('div');
+                textLayerDiv.setAttribute('class', 'textLayer');
+                textLayerDiv.style.width = viewport.width + 'px';
+                textLayerDiv.style.height = viewport.height + 'px';
+                pageDiv.appendChild(textLayerDiv);
+                
+                pdfjsLib.renderTextLayer({
+                    textContentSource: textContent,
+                    container: textLayerDiv,
+                    viewport: viewport,
+                    textDivs: []
                 });
                 
-                if (currentPreviewPage !== activePage) {
-                    currentPreviewPage = activePage;
-                    updatePageIndicator();
-                }
-            });
-            
-            dropdown.addEventListener('change', (e) => {
-                const targetPage = parseInt(e.target.value);
-                const targetEl = document.getElementById(`preview-page-${targetPage}`);
-                if (targetEl) targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            });
+                container.appendChild(pageDiv);
+            }
+        } catch (err) {
+            console.error('Error rendering PDF:', err);
+            container.innerHTML = '<div style="color:var(--fg-muted);">Cannot load PDF preview.</div>';
         }
+    }
+
+    function showWorkspace(jobId, origFilename, dlFilename) {
+        uploadScreen.style.display = 'none';
+        processingScreen.style.display = 'none';
+        splitScreen.style.display = 'flex';
         
-        const targetEl = document.getElementById(`preview-page-${page}`);
-        if (targetEl) targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        
-        currentPreviewPage = page;
-        updatePageIndicator();
+        currentJobId = jobId;
+        headerDocName.textContent = origFilename;
+
+        downloadBtn.style.display = 'flex';
+        downloadBtn.href = '/download/' + jobId + '/' + encodeURIComponent(dlFilename);
+
+        previewScrollContainerEn.innerHTML = '';
+        previewScrollContainerTh.innerHTML = '';
+
+        // Load original and translated PDFs using PDF.js
+        renderPDF('/download_original/' + jobId, previewScrollContainerEn);
+        renderPDF('/download/' + jobId + '/' + encodeURIComponent(dlFilename), previewScrollContainerTh);
     }
-
-    function updatePageIndicator() {
-        document.getElementById('current-page').textContent = currentPreviewPage + 1;
-        document.getElementById('total-pages').textContent = totalPages;
-        document.getElementById('page-dropdown').value = currentPreviewPage;
-        prevPageBtn.disabled = currentPreviewPage <= 0;
-        nextPageBtn.disabled = currentPreviewPage >= totalPages - 1;
-    }
-
-    prevPageBtn.addEventListener('click', () => {
-        if (currentPreviewPage > 0) loadPreview(currentPreviewPage - 1);
-    });
-
-    nextPageBtn.addEventListener('click', () => {
-        if (currentPreviewPage < totalPages - 1) loadPreview(currentPreviewPage + 1);
-    });
-
-    // ---- Error Handling ----
-    function showError(message) {
-        errorMessage.textContent = message;
-        showSection(errorSection);
-    }
-
-    retryBtn.addEventListener('click', () => {
-        showSection(uploadSection);
-        selectedFile = null;
-        fileInput.value = '';
-    });
-
-    // ---- New File ----
-    newFileBtn.addEventListener('click', () => {
-        currentJobId = null;
-        selectedFile = null;
-        fileInput.value = '';
-        totalPages = 0;
-        currentPreviewPage = 0;
-        previewSection.classList.add('hidden');
-        showSection(uploadSection);
-    });
 
     // ---- History ----
     async function loadHistory() {
-        historyList.innerHTML = '<div class="history-loading">กำลังโหลด...</div>';
         try {
             const response = await fetch('/history');
             const data = await response.json();
             
             if (!data.history || data.history.length === 0) {
-                historyList.innerHTML = '<div class="history-empty">ไม่มีประวัติการแปล</div>';
+                historyContainer.innerHTML = '<div class="history-loading" style="font-size: 12px; padding: 10px; color: var(--fg-muted);">ไม่มีประวัติการแปล</div>';
                 return;
             }
             
-            historyList.innerHTML = '';
-            data.history.forEach(item => {
-                const li = document.createElement('li');
-                li.className = 'history-item';
+            historyContainer.innerHTML = '';
+            data.history.forEach((item, index) => {
+                const dateStr = new Date(item.created_at * 1000).toLocaleTimeString('en-US', {hour: '2-digit', minute:'2-digit'});
+                const isActive = (item.job_id === currentJobId) ? 'active' : '';
                 
-                const date = new Date(item.created_at * 1000).toLocaleString('th-TH');
-                
-                li.innerHTML = `
-                    <div class="history-icon">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-                            <polyline points="14 2 14 8 20 8"></polyline>
-                            <line x1="16" y1="13" x2="8" y2="13"></line>
-                            <line x1="16" y1="17" x2="8" y2="17"></line>
-                            <polyline points="10 9 9 9 8 9"></polyline>
-                        </svg>
+                const div = document.createElement('div');
+                div.className = `history-item ${isActive}`;
+                div.innerHTML = `
+                    <div class="history-item-info">
+                        <svg class="history-item-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                        <span class="history-item-title">${item.filename}</span>
                     </div>
-                    <div class="history-details">
-                        <div class="history-filename">${item.filename || item.job_id}</div>
-                        <div class="history-meta">
-                            <span>${date}</span>
-                            <span>${item.pages || '?'} หน้า</span>
-                        </div>
-                    </div>
+                    <span class="history-item-meta">${dateStr}</span>
                 `;
                 
-                li.addEventListener('click', () => {
-                    openHistoryItem(item);
+                div.addEventListener('click', () => {
                     document.querySelectorAll('.history-item').forEach(el => el.classList.remove('active'));
-                    li.classList.add('active');
+                    div.classList.add('active');
+                    
+                    const dlName = item.filename.replace(/\.pdf$/i, '') + '_TH.pdf';
+                    totalPages = item.pages;
+                    showWorkspace(item.job_id, item.filename, dlName);
+                    
+                    if (window.innerWidth <= 768) {
+                        sidebarPane.classList.add('collapsed');
+                    }
                 });
                 
-                historyList.appendChild(li);
+                historyContainer.appendChild(div);
             });
             
         } catch (err) {
-            historyList.innerHTML = '<div class="history-empty" style="color:var(--error)">เกิดข้อผิดพลาดในการโหลดข้อมูล</div>';
+            console.error(err);
         }
     }
 
-    function openHistoryItem(item) {
-        currentJobId = item.job_id;
-        totalPages = item.pages || 0;
-        eventSource = null; // Ensure we don't have dangling connections
+    // Load history initially
+    loadHistory();
+
+    // ---- Scroll Sync ----
+    const paneLeft = document.getElementById('pane-left');
+    const paneRight = document.getElementById('pane-right');
+    let isScrollSyncActive = true;
+    let scrollSource = null;
+
+    window.toggleScrollSync = function(active) {
+        isScrollSyncActive = active;
+        showToast(active ? 'Scroll synchronization enabled' : 'Scroll synchronization disabled');
+    };
+
+    function syncScroll(event) {
+        if (!isScrollSyncActive) return;
         
-        completeDetail.textContent = `เปิดจากประวัติการแปล (${totalPages} หน้า)`;
+        const source = event.currentTarget;
+        if (scrollSource && scrollSource !== source) return;
         
-        const dlName = item.filename ? item.filename.replace(/\.pdf$/i, '') + '_TH.pdf' : 'translated.pdf';
-        downloadBtn.href = '/download/' + currentJobId + '/' + encodeURIComponent(dlName);
-        downloadBtn.target = '_blank';
+        scrollSource = source;
+        const target = (source === paneLeft) ? paneRight : paneLeft;
         
-        showSection(completeSection);
-        
-        const container = document.getElementById('preview-scroll-container');
-        if (container) container.innerHTML = ''; // reset preview
-        
-        if (totalPages > 0) {
-            previewSection.classList.remove('hidden');
-            loadPreview(0);
-        } else {
-            previewSection.classList.add('hidden');
+        const scrollPercent = source.scrollTop / (source.scrollHeight - source.clientHeight);
+        if (!isNaN(scrollPercent)) {
+            target.scrollTop = scrollPercent * (target.scrollHeight - target.clientHeight);
         }
         
-        if (window.innerWidth <= 860) {
-            appSidebar.classList.remove('open');
-        }
+        clearTimeout(source.scrollTimeout);
+        source.scrollTimeout = setTimeout(() => {
+            scrollSource = null;
+        }, 50);
     }
-    
-    if (refreshHistoryBtn) {
-        refreshHistoryBtn.addEventListener('click', () => {
-            loadHistory();
+
+    paneLeft.addEventListener('scroll', syncScroll);
+    paneRight.addEventListener('scroll', syncScroll);
+
+    // ---- Tweaks Config Panel ----
+    window.toggleTweaks = function() {
+        document.getElementById('tweaks-box').classList.toggle('show');
+    };
+
+    window.setTheme = function(theme) {
+        document.body.className = '';
+        document.body.classList.add('theme-' + theme);
+        
+        document.querySelectorAll('.tweak-theme-btn').forEach(btn => btn.classList.remove('active'));
+        document.getElementById('theme-btn-' + theme).classList.add('active');
+        showToast(`Theme changed to Next.js ${theme.toUpperCase()}`);
+    };
+
+    window.adjustSplitRatio = function(val) {
+        document.documentElement.style.setProperty('--split-ratio', val + '%');
+        document.getElementById('split-val-display').textContent = val + '%';
+        const resizer = document.getElementById('split-handler');
+        resizer.style.left = `calc(${val}% - 4px)`;
+    };
+
+    // Split panel resizing drag handle
+    const handler = document.getElementById('split-handler');
+    let isDragging = false;
+
+    handler.addEventListener('mousedown', function() {
+        isDragging = true;
+        handler.classList.add('dragging');
+        document.body.style.cursor = 'col-resize';
+    });
+
+    document.addEventListener('mousemove', function(e) {
+        if (!isDragging) return;
+        const containerWidth = document.querySelector('.split-pane-container').offsetWidth;
+        let ratio = (e.clientX / containerWidth) * 100;
+        if (ratio < 20) ratio = 20;
+        if (ratio > 80) ratio = 80;
+        window.adjustSplitRatio(Math.round(ratio));
+    });
+
+    document.addEventListener('mouseup', function() {
+        if (isDragging) {
+            isDragging = false;
+            handler.classList.remove('dragging');
+            document.body.style.cursor = '';
+        }
+    });
+
+    // Mouse Spotlight
+    document.addEventListener('mousemove', (e) => {
+        document.querySelectorAll('.glow-card-target').forEach(card => {
+            const rect = card.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            card.style.setProperty('--mouse-x', `${x}px`);
+            card.style.setProperty('--mouse-y', `${y}px`);
+        });
+    });
+
+    // Sidebar resize handler
+    const sidebarHandler = document.getElementById('sidebar-handler');
+    let isDraggingSidebar = false;
+
+    if (sidebarHandler) {
+        sidebarHandler.addEventListener('mousedown', function() {
+            isDraggingSidebar = true;
+            sidebarHandler.classList.add('dragging');
+            document.body.style.cursor = 'col-resize';
+        });
+
+        document.addEventListener('mousemove', function(e) {
+            if (!isDraggingSidebar) return;
+            let width = e.clientX;
+            if (width < 200) width = 200;
+            if (width > 600) width = 600;
+            document.documentElement.style.setProperty('--sidebar-width', width + 'px');
+        });
+
+        document.addEventListener('mouseup', function() {
+            if (isDraggingSidebar) {
+                isDraggingSidebar = false;
+                sidebarHandler.classList.remove('dragging');
+                document.body.style.cursor = '';
+            }
         });
     }
-
-    // Load history on initial load
-    loadHistory();
 
 })();
