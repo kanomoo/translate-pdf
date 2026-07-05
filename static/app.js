@@ -344,12 +344,13 @@
         const sessionId = currentRenderSession;
 
         // Wait a frame to ensure DOM is fully laid out so clientWidth is correct!
+        // 400ms ensures any 350ms CSS transitions on the layout are complete.
         setTimeout(() => {
             if (currentRenderSession !== sessionId) return;
             // Load original and translated PDFs using PDF.js
             renderPDF('/download_original/' + jobId, previewScrollContainerEn, sessionId);
             renderPDF('/download/' + jobId + '/' + encodeURIComponent(dlFilename), previewScrollContainerTh, sessionId);
-        }, 150);
+        }, 400);
     }
 
     window.reloadWorkspace = function() {
@@ -438,33 +439,32 @@
     const paneLeft = document.getElementById('pane-left');
     const paneRight = document.getElementById('pane-right');
     let isScrollSyncActive = true;
-    let isSyncingLeft = false;
-    let isSyncingRight = false;
+    let expectedScrollTopLeft = -1;
+    let expectedScrollTopRight = -1;
 
     window.toggleScrollSync = function(active) {
         isScrollSyncActive = active;
         showToast(active ? 'Scroll synchronization enabled' : 'Scroll synchronization disabled');
     };
 
-    function syncScroll(source, target) {
+    function syncScroll(event) {
         if (!isScrollSyncActive) return;
-        if (!isSyncingLeft && !isSyncingRight) {
-            if (source === paneLeft) {
-                isSyncingLeft = true;
-                target.scrollTop = source.scrollTop;
-            } else {
-                isSyncingRight = true;
-                target.scrollTop = source.scrollTop;
-            }
-            setTimeout(() => {
-                isSyncingLeft = false;
-                isSyncingRight = false;
-            }, 50);
+        
+        const source = event.currentTarget;
+        
+        if (source === paneLeft) {
+            if (Math.abs(paneLeft.scrollTop - expectedScrollTopLeft) < 2) return;
+            expectedScrollTopRight = paneLeft.scrollTop;
+            paneRight.scrollTop = paneLeft.scrollTop;
+        } else {
+            if (Math.abs(paneRight.scrollTop - expectedScrollTopRight) < 2) return;
+            expectedScrollTopLeft = paneRight.scrollTop;
+            paneLeft.scrollTop = paneRight.scrollTop;
         }
     }
 
-    paneLeft.addEventListener('scroll', () => syncScroll(paneLeft, paneRight));
-    paneRight.addEventListener('scroll', () => syncScroll(paneRight, paneLeft));
+    paneLeft.addEventListener('scroll', syncScroll);
+    paneRight.addEventListener('scroll', syncScroll);
 
     // ---- Tweaks Config Panel ----
     window.toggleTweaks = function() {

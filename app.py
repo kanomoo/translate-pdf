@@ -219,12 +219,15 @@ def extract_items(doc):
                     last_span = current_spans[-1]
                     gap = span["bbox"][0] - last_span["bbox"][2]
                     
-                    if gap > (span.get("size", 12) * 1.0):
-                        phrases.append(current_spans)
+                    if gap > (span.get("size", 12) * 0.4):
                         prev_text = "".join(s["text"] for s in current_spans).strip()
-                        if not bool(re.match(r'^(\d+[\.\)]|[•\-\*>])$', prev_text)):
+                        if bool(re.match(r'^(\d+[\.\)]|[•\-\*>])$', prev_text)):
+                            # Treat bullet point as part of the same phrase
+                            current_spans.append(span)
+                        else:
+                            phrases.append(current_spans)
                             is_table = True
-                        current_spans = [span]
+                            current_spans = [span]
                     else:
                         current_spans.append(span)
                 if current_spans:
